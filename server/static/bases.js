@@ -500,13 +500,22 @@ async function refreshBasesPresets() {
 const basesRows = [];       // {key, row} for config-load resync
 const basesChecks = {};     // key -> checkbox element
 
+// Rebuilding every base mesh is heavy (seconds at high quality); dragging a
+// slider fires input events continuously, so debounce local rebuilds — only
+// the last position within 150 ms actually rebuilds.
+let meshTimer = 0;
+function scheduleMeshes() {
+  clearTimeout(meshTimer);
+  meshTimer = setTimeout(rebuildMeshes, 150);
+}
+
 function addBaseSliders(wrap, params) {
   for (const [key, label, min, max, step, unit, refetch] of params) {
     const row = sliderRow(label, BASE_OPTS[key], min, max, step, unit,
       (v) => {
         BASE_OPTS[key] = v;
         if (refetch) scheduleBases();
-        else rebuildMeshes();     // local-only rebuild, no refetch
+        else scheduleMeshes();    // local-only rebuild, no refetch
       });
     basesRows.push({ key, row });
     wrap.appendChild(row);
@@ -521,7 +530,7 @@ function addToggle(wrap, key, label) {
   chk.checked = BASE_OPTS[key];
   chk.addEventListener("change", () => {
     BASE_OPTS[key] = chk.checked;
-    rebuildMeshes();
+    scheduleMeshes();
   });
   const lab = document.createElement("label");
   lab.textContent = label;
