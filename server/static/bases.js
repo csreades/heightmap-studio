@@ -3,11 +3,11 @@
 "use strict";
 
 const BASE_OPTS = {
-  count: 6, large_fraction: 0.35, d_small: 25, d_large: 32,
-  base_height: 3.0, taper_mm: 1.5, px_per_mm: 5, exaggeration: 1.0,
+  count: 6, large_fraction: 0.35, d_small: 25, d_large: 40,
+  base_height: 2.2, taper_deg: 3.9, px_per_mm: 5, exaggeration: 1.0,
   rim_lip_mm: 1.0,
-  pins_enabled: false, pin_count: 4, pin_diameter_mm: 2.0,
-  pin_depth_mm: 1.0, pin_ring_frac: 0.55, pin_noise: 0.0,
+  pins_enabled: false, pin_count: 5, pin_diameter_mm: 6.1,
+  pin_depth_mm: 1.4, pin_ring_frac: 0.55, pin_noise: 0.0,
   support_enabled: false, support_height_mm: 4.0,
   support_thickness_mm: 0.8, support_raft_mm: 2.0,
   support_base_mm: 40.0,  // clamps to disc width -> sides go straight down
@@ -20,13 +20,13 @@ const BASE_PARAMS = [
   ["d_large", "Large Ø", 15, 60, 0.5, "mm", true],
   ["px_per_mm", "Quality", 2, 10, 0.5, "px/mm", true],
   ["base_height", "Base height", 1, 6, 0.1, "mm"],
-  ["taper_mm", "Side taper", -4, 4, 0.1, "mm"],  // + = narrower at top (LI style), - = narrower at bottom
+  ["taper_deg", "Side taper", -15, 15, 0.1, "°"],  // wall angle from vertical; + = narrower at top (LI style)
   ["rim_lip_mm", "Edge lip", 0, 4, 0.1, "mm"],   // flat rim: bump map fades out before the edge
   ["exaggeration", "Relief view ×", 0.5, 4, 0.1, "x"],
 ];
 const PIN_PARAMS = [
   ["pin_count", "Pin count", 2, 12, 1, ""],
-  ["pin_diameter_mm", "Pin Ø", 0.5, 6, 0.1, "mm"],
+  ["pin_diameter_mm", "Pin Ø", 0.5, 8, 0.1, "mm"],
   ["pin_depth_mm", "Pin depth", 0.2, 3, 0.05, "mm"],
   ["pin_ring_frac", "Ring radius", 0.1, 0.95, 0.01, "×R"],
   ["pin_noise", "Position noise", 0, 1, 0.02, ""],   // 1 = up to 1 mm XY error
@@ -172,10 +172,13 @@ function basePins(baseIndex, Rt) {
 function buildBaseGeometry(base, baseIndex, exOverride) {
   const { heights, n, diameter: D, mean } = base;
   // LI bases are widest at the table and narrow toward the top surface:
-  // nominal diameter D at the bottom, top pulled in by the taper
+  // nominal diameter D at the bottom, top pulled in by the taper. Fixed
+  // wall angle: inset = height * tan(angle), so every base shares one angle
+  // (e.g. 3.9deg -> a 25mm base of height 2.2 tops out at 24.7mm).
   const Rb = D / 2;                                    // bottom radius
-  const Rt = Math.min(Math.max(Rb - BASE_OPTS.taper_mm, Rb * 0.4), Rb * 1.6);
   const H = BASE_OPTS.base_height;
+  const inset = H * Math.tan((BASE_OPTS.taper_deg * Math.PI) / 180);
+  const Rt = Math.min(Math.max(Rb - inset, Rb * 0.4), Rb * 1.6);
   const ex = exOverride !== undefined ? exOverride : BASE_OPTS.exaggeration;
   // match mesh density to the height grid so the rim is as sharp as the
   // center (polar sector spacing grows with radius)

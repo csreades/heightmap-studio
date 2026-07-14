@@ -83,7 +83,12 @@ def _get_domain(key: str) -> Domain:
     return dom
 
 
-_default_domain = _register(default_config(), 42)
+_DEFAULT_PRESET = os.path.join(PRESET_DIR, "nice looking v2.json")
+try:
+    _default_config, _default_seed = load_preset(_DEFAULT_PRESET)
+except (OSError, ValueError):
+    _default_config, _default_seed = default_config(), 42
+_default_domain = _register(_default_config, _default_seed)
 
 
 # ------------------------------------------------------------------ config
@@ -95,7 +100,7 @@ class ConfigIn(BaseModel):
 
 @app.get("/api/defaults")
 def get_defaults():
-    return {"config": default_config(), "seed": _default_domain.seed,
+    return {"config": merge_config(_default_config), "seed": _default_domain.seed,
             "key": _default_domain.key}
 
 
