@@ -9,6 +9,7 @@ const BASE_OPTS = {
   rim_lip_mm: 1.0,
   pins_enabled: false, pin_count: 5, pin_diameter_mm: 6.1,
   pin_depth_mm: 1.4, pin_ring_frac: 0.55, pin_noise: 0.0,
+  stack_enabled: false, stack_gap_mm: 2.0,
   support_enabled: false, support_height_mm: 4.0,
   support_thickness_mm: 0.4, support_raft_mm: 2.0,
   support_base_mm: 40.0,  // clamps to disc width -> sides go straight down
@@ -349,7 +350,9 @@ function baseGeometries(exOverride, basesArr, caps) {
   const out = [];
   bases.forEach((b, i) => {
     out.push({ g: buildBaseGeometry(b, i, exOverride, caps), off: offs[i], base: b, i });
-    if (BASE_OPTS.support_enabled) {
+    // supports belong to the on-edge print style; a stacked column prints
+    // upright directly on the plate, so they're skipped in stack mode
+    if (BASE_OPTS.support_enabled && !BASE_OPTS.stack_enabled) {
       for (const g of buildSupportGeometries(b)) {
         out.push({ g, off: offs[i], base: b, i });
       }
@@ -371,7 +374,7 @@ function rebuildMeshes() {
 
   for (const { g, off } of baseGeometries()) {
     const mesh = new THREE.Mesh(g, mat);
-    mesh.position.set(off[0], 0, off[1]);
+    mesh.position.set(off[0], off[2] || 0, off[1]);
     group.add(mesh);
   }
   R3.scene.add(group);
@@ -387,12 +390,19 @@ function rebuildMeshes() {
 // ---------------------------------------------------------------- STL export
 
 function layoutOffsets(count) {
+  // offsets are [x, z, y]; y is only nonzero in stack-for-print mode
+  if (BASE_OPTS.stack_enabled) {
+    // one upright, center-aligned column: base i sits base_height + gap
+    // above the one below, first base on the plate (y = 0)
+    const pitch = BASE_OPTS.base_height + BASE_OPTS.stack_gap_mm;
+    return Array.from({ length: count }, (_, i) => [0, 0, i * pitch]);
+  }
   const perRow = Math.ceil(Math.sqrt(count));
   const pitch = Math.max(BASE_OPTS.d_small, BASE_OPTS.d_large) + 14;
   const rows = Math.ceil(count / perRow);
   return Array.from({ length: count }, (_, i) => {
     const r = Math.floor(i / perRow), c = i % perRow;
-    return [(c - (perRow - 1) / 2) * pitch, (r - (rows - 1) / 2) * pitch];
+    return [(c - (perRow - 1) / 2) * pitch, (r - (rows - 1) / 2) * pitch, 0];
   });
 }
 
@@ -444,13 +454,13 @@ function exportSTLGeos(hbases) {
   let o = 84;
   // with supports on, export in PRINT orientation: discs on edge in a row,
   // tabs pointing down, every support line landing on z=0
-  const printMode = BASE_OPTS.support_enabled;
+  const printMode = BASE_OPTS.support_enabled && !BASE_OPTS.stack_enabled;
   const pitch = Math.max(BASE_OPTS.d_small, BASE_OPTS.d_large) + 8;
   const nBases = hbases.length;
   geos.forEach(({ g, off, base, i }) => {
     const p = g.attributes.position.array;
     const ix = indexOf(g);
-    const [ox, oz] = off;
+    const [ox, oz, oy = 0] = off;
     const rowX = (i - (nBases - 1) / 2) * pitch;
     const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm;
     for (let k = 0; k < ix.length; k += 3) {
@@ -463,7 +473,8 @@ function exportSTLGeos(hbases) {
         if (printMode) {
           v.push([p[a + 2] + rowX, p[a + 1], zTop - p[a]]);
         } else {
-          v.push([p[a] + ox, -(p[a + 2] + oz), p[a + 1]]);
+          // flat/stacked: y offset (stack height) becomes STL z
+          v.push([p[a] + ox, -(p[a + 2] + oz), p[a + 1] + oy]);
         }
       }
       const ux = v[1][0] - v[0][0], uy = v[1][1] - v[0][1], uz = v[1][2] - v[0][2];
@@ -569,6 +580,24 @@ function initBases() {
   wrap.appendChild(supHead);
   addToggle(wrap, "support_enabled", "Include support");
   addBaseSliders(wrap, SUPPORT_PARAMS);
+
+  // stack-for-print: one upright, center-aligned column with controllable
+  // clear spacing; overrides the on-edge support layout when enabled
+  const stackHead = document.createElement("h3");
+  stackHead.textContent = "Stack for print";
+  wrap.appendChild(stackHead);
+  addToggle(wrap, "stack_enabled", "Stack upright (aligned column)");
+  addBaseSliders(wrap, [
+    ["stack_gap_mm", "Stack spacing", 0, 15, 0.25, "mm"],
+  ]);
+  const stackNote = document.createElement("div");
+  stackNote.className = "row";
+  stackNote.style.fontSize = "11px";
+  stackNote.style.opacity = "0.75";
+  stackNote.textContent =
+    "Upright column, centers aligned; spacing = clear gap between bases. " +
+    "Supports are ignored while stacking.";
+  wrap.appendChild(stackNote);
 
   // STL export resolution — independent of the viewer "Quality". The mesh at
   // this pitch is only ever built at download time, never rendered on screen.
