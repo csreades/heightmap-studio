@@ -378,14 +378,15 @@ function rebuildMeshes() {
   for (const { g, off, base } of baseGeometries()) {
     const mesh = new THREE.Mesh(g, mat);
     if (stackPrint) {
-      // show true print orientation: disc on edge, tab down, raft below —
-      // local (x,y,z) -> viewer (z, zTop - x + rise, -y)
+      // show true print orientation: disc on edge, tab down, raft on the
+      // ground plane; rack rise runs along local y -> viewer -z:
+      // local (x,y,z) -> viewer (z, zTop - x, -(y + rise))
       const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm;
       mesh.matrixAutoUpdate = false;
       mesh.matrix.set(
         0, 0, 1, 0,
-        -1, 0, 0, zTop + (off[2] || 0),
-        0, -1, 0, 0,
+        -1, 0, 0, zTop,
+        0, -1, 0, -(off[2] || 0),
         0, 0, 0, 1);
     } else {
       mesh.position.set(off[0], off[2] || 0, off[1]);
@@ -410,14 +411,22 @@ function layoutOffsets(bases) {
   const count = bases.length;
   if (BASE_OPTS.stack_enabled) {
     if (BASE_OPTS.support_enabled) {
-      // full print-orientation units [disc + tab + raft] stacked: each
-      // unit spans D + support_height from its raft face to its disc top,
-      // and the next unit's raft sits `gap` above that (0 = touching)
-      const S = BASE_OPTS.support_height_mm;
-      let z = 0;
+      // print-orientation units racked along their thin axis (the disc
+      // thickness direction) like plates in a rack: every raft stays flat
+      // on the build plate (all raft bottoms coplanar at z=0), units
+      // upright and center-aligned, `gap` of clearance between them
+      const H = BASE_OPTS.base_height;
+      const tf = BASE_OPTS.support_thickness_mm;
+      const raftT = Math.max(BASE_OPTS.support_raft_mm, tf + 0.3);
+      const cy = Math.min(H / 2, tf - 0.1 + raftT / 2);
+      let cursor = 0;
       return bases.map((b) => {
-        const off = [0, 0, z];
-        z += b.diameter + S + BASE_OPTS.stack_gap_mm;
+        // unit extent along the thin (local y) axis: disc slab + relief
+        // peak on one side, raft overhang (if any) on the other
+        const yMin = Math.min(0, cy - raftT / 2);
+        const yMax = Math.max(H + (b.max - b.mean), cy + raftT / 2);
+        const off = [0, 0, cursor - yMin];
+        cursor += (yMax - yMin) + BASE_OPTS.stack_gap_mm;
         return off;
       });
     }
@@ -491,10 +500,11 @@ function exportSTLGeos(hbases) {
     const p = g.attributes.position.array;
     const ix = indexOf(g);
     const [ox, oz, oy = 0] = off;
-    // stack mode: one aligned column (no row spread); each unit is only
-    // translated up by its cumulative rise — geometry/supports unchanged
+    // stack mode: one aligned rack (no row spread); each unit is only
+    // translated along the thin axis (STL Y) — geometry/supports and the
+    // raft-on-plate plane (z=0) unchanged
     const rowX = stacked ? 0 : (i - (nBases - 1) / 2) * pitch;
-    const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm + (printMode ? oy : 0);
+    const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm;
     for (let k = 0; k < ix.length; k += 3) {
       // both maps have determinant +1 so the winding stays outward:
       //   flat:  (x, y, z) -> (x, -z, y)         (three.js y-up -> STL z-up)
@@ -503,7 +513,7 @@ function exportSTLGeos(hbases) {
       for (let m = 0; m < 3; m++) {
         const a = ix[k + m] * 3;
         if (printMode) {
-          v.push([p[a + 2] + rowX, p[a + 1], zTop - p[a]]);
+          v.push([p[a + 2] + rowX, p[a + 1] + (stacked ? oy : 0), zTop - p[a]]);
         } else {
           // flat/stacked: y offset (stack height) becomes STL z
           v.push([p[a] + ox, -(p[a + 2] + oz), p[a + 1] + oy]);
@@ -627,8 +637,9 @@ function initBases() {
   stackNote.style.fontSize = "11px";
   stackNote.style.opacity = "0.75";
   stackNote.textContent =
-    "One aligned column instead of a row — no splitting/aligning needed. " +
-    "Supports export exactly as usual; spacing = clear gap between units.";
+    "Racks the print-orientation units along their thin axis — upright, " +
+    "aligned, every raft flat on the plate (z=0). Spacing = clearance " +
+    "between units. No splitting or rotating needed.";
   wrap.appendChild(stackNote);
 
   // STL export resolution — independent of the viewer "Quality". The mesh at
