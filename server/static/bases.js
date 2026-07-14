@@ -328,8 +328,12 @@ function buildSupportGeometries(base) {
   tab.computeVertexNormals();
 
   const raftT = Math.max(BASE_OPTS.support_raft_mm, tf + 0.3);
-  const raft = new THREE.BoxGeometry(1.6, raftT, 2 * L + 2);
-  raft.translate(xB - 0.8, tf / 2, 0);
+  // raft: thickness raftT (slider), 2 mm tall off the plate, exactly the
+  // base width long (2L clamps to the disc diameter at the default
+  // support_base_mm)
+  const raftH = 2.0;
+  const raft = new THREE.BoxGeometry(raftH, raftT, 2 * L);
+  raft.translate(xB - raftH / 2, tf / 2, 0);
   return [tab, raft];
 }
 
