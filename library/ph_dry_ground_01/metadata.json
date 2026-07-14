@@ -1,0 +1,33 @@
+{
+  "name": "Dry Ground 01",
+  "source": "Poly Haven",
+  "source_url": "https://polyhaven.com/a/dry_ground_01",
+  "file_url": "https://dl.polyhaven.org/file/ph-assets/Textures/png/2k/dry_ground_01/dry_ground_01_disp_2k.png",
+  "license": "CC0 1.0 (https://polyhaven.com/license)",
+  "author": "Rob Tuytel",
+  "tags": [
+    "cracked-earth",
+    "desert",
+    "baked",
+    "dry",
+    "sand",
+    "mud",
+    "cracked",
+    "desert",
+    "baked",
+    "rough",
+    "fissured"
+  ],
+  "original_resolution": "8k available; downloaded 2k",
+  "physical_scale_mm": 4000,
+  "physical_scale_note": "Poly Haven reported dimensions (mm): [4000, 4000], scale: 4M x 4M",
+  "normalization": [
+    "greyscale float conversion",
+    "large-scale slope stripped (gaussian high-pass, sigma=512px)",
+    "remapped to full range (0.5..99.5 percentile clip)"
+  ],
+  "stored_resolution": [
+    2048,
+    2048
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "config": {
+    "layers": {
+      "cracks": {
+        "blend": "add",
+        "cell_mm": 2.75,
+        "depth_mm": 0.3,
+        "enabled": true,
+        "falloff": 1.6,
+        "jitter": 1,
+        "source": null,
+        "source_invert": false,
+        "source_tile_mm": 45,
+        "warp_mm": 2,
+        "width_mm": 0.55
+      },
+      "craters": {
+        "crack_clearing": 1,
+        "depth_per_radius": 0.14,
+        "ejecta_falloff": 0.45,
+        "enabled": true,
+        "max_radius_mm": 9,
+        "min_radius_mm": 2,
+        "probability": 0.6,
+        "rim_height_rel": 0.55,
+        "rim_width_rel": 0.16,
+        "source": [
+          "nasa_lola_tycho",
+          "nasa_lola_copernicus",
+          "nasa_lola_theophilus",
+          "nasa_lola_king",
+          "nasa_lola_aristarchus",
+          "nasa_lola_burg"
+        ],
+        "source_mix": 1,
+        "spacing_mm": 14
+      },
+      "detail": {
+        "amplitude_mm": 0.04,
+        "enabled": true,
+        "octaves": 2,
+        "scale_mm": 0.9
+      },
+      "ground": {
+        "amplitude_mm": 0.56,
+        "enabled": true,
+        "gain": 0.5,
+        "lacunarity": 2,
+        "octaves": 4,
+        "roughness_amplitude_mm": 0.05,
+        "roughness_scale_mm": 0.3,
+        "scale_mm": 60
+      },
+      "plates": {
+        "bevel_mm": 0.4,
+        "broken_probability": 0.35,
+        "coverage": 0.5,
+        "crack_cell_mm": 5,
+        "crack_depth_mm": 0.16,
+        "crack_width_mm": 0.45,
+        "enabled": false,
+        "height_var_mm": 0.05,
+        "joint_width_mm": 0.7,
+        "missing_probability": 0.08,
+        "patch_scale_mm": 130,
+        "plate_height_mm": 0.16,
+        "rotation_deg": 12,
+        "tile_mm": 16,
+        "tilt_mm": 0.09
+      },
+      "roads": {
+        "berm_height_mm": 0.1,
+        "berm_width_mm": 1.4,
+        "crack_surface": 0,
+        "edge_probability": 0.55,
+        "enabled": false,
+        "junction_probability": 0.3,
+        "offset_mm": -0.12,
+        "rut_depth_mm": 0.06,
+        "rut_offset_mm": 2.4,
+        "rut_width_mm": 0.5,
+        "shoulder_mm": 2.5,
+        "spacing_mm": 170,
+        "width_mm": 9,
+        "wobble": 0.35
+      }
+    },
+    "master_amplitude": 1,
+    "px_per_mm": 10
+  },
+  "seed": 42
+}

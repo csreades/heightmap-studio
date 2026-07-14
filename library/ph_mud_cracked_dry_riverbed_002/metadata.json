@@ -1,0 +1,33 @@
+{
+  "name": "Mud Cracked Dry Riverbed 002",
+  "source": "Poly Haven",
+  "source_url": "https://polyhaven.com/a/mud_cracked_dry_riverbed_002",
+  "file_url": "https://dl.polyhaven.org/file/ph-assets/Textures/png/2k/mud_cracked_dry_riverbed_002/mud_cracked_dry_riverbed_002_disp_2k.png",
+  "license": "CC0 1.0 (https://polyhaven.com/license)",
+  "author": "Dario Barresi, Dimitrios Savva",
+  "tags": [
+    "cracked-earth",
+    "dry-mud",
+    "riverbed",
+    "weathered",
+    "cracked",
+    "rough",
+    "ground",
+    "dry",
+    "uneven",
+    "mud",
+    "cracks"
+  ],
+  "original_resolution": "8k available; downloaded 2k",
+  "physical_scale_mm": 2000,
+  "physical_scale_note": "Poly Haven reported dimensions (mm): [2000, 2000], scale: None",
+  "normalization": [
+    "greyscale float conversion",
+    "large-scale slope stripped (gaussian high-pass, sigma=512px)",
+    "remapped to full range (0.5..99.5 percentile clip)"
+  ],
+  "stored_resolution": [
+    2048,
+    2048
+  ]
+}

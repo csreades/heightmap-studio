@@ -1,0 +1,32 @@
+{
+  "name": "Aerial Mud 1",
+  "source": "Poly Haven",
+  "source_url": "https://polyhaven.com/a/aerial_mud_1",
+  "file_url": "https://dl.polyhaven.org/file/ph-assets/Textures/png/2k/aerial_mud_1/aerial_mud_1_disp_2k.png",
+  "license": "CC0 1.0 (https://polyhaven.com/license)",
+  "author": "Rob Tuytel",
+  "tags": [
+    "mud",
+    "wheel-ruts",
+    "tracks",
+    "mud",
+    "tracks",
+    "tire tracks",
+    "wet soil",
+    "uneven surface",
+    "ruts",
+    "surface depressions"
+  ],
+  "original_resolution": "8k available; downloaded 2k",
+  "physical_scale_mm": 8000,
+  "physical_scale_note": "Poly Haven reported dimensions (mm): [8000, 8000], scale: 40x40",
+  "normalization": [
+    "greyscale float conversion",
+    "large-scale slope stripped (gaussian high-pass, sigma=512px)",
+    "remapped to full range (0.5..99.5 percentile clip)"
+  ],
+  "stored_resolution": [
+    2048,
+    2048
+  ]
+}

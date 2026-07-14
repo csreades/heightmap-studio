@@ -1,0 +1,32 @@
+{
+  "name": "Gravel 043",
+  "source": "ambientCG",
+  "source_url": "https://ambientcg.com/view?id=Gravel043",
+  "file_url": "https://ambientcg.com/get?file=Gravel043_2K-PNG.zip",
+  "license": "CC0 1.0 (https://docs.ambientcg.com/license/)",
+  "author": "ambientCG (Lennart Demes)",
+  "tags": [
+    "gravel",
+    "fine",
+    "043",
+    "43",
+    "fine",
+    "grained",
+    "granular",
+    "gravel",
+    "gravel043",
+    "gray"
+  ],
+  "original_resolution": "up to 8K available; downloaded 2K PNG",
+  "physical_scale_mm": null,
+  "physical_scale_note": "ambientCG reported dimensions (cm): (0, 0)",
+  "normalization": [
+    "greyscale float conversion",
+    "large-scale slope stripped (gaussian high-pass, sigma=512px)",
+    "remapped to full range (0.5..99.5 percentile clip)"
+  ],
+  "stored_resolution": [
+    2048,
+    2048
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "Aerial Asphalt 01",
+  "source": "Poly Haven",
+  "source_url": "https://polyhaven.com/a/aerial_asphalt_01",
+  "file_url": "https://dl.polyhaven.org/file/ph-assets/Textures/png/2k/aerial_asphalt_01/aerial_asphalt_01_disp_2k.png",
+  "license": "CC0 1.0 (https://polyhaven.com/license)",
+  "author": "Rob Tuytel",
+  "tags": [
+    "asphalt",
+    "road",
+    "cracked",
+    "road",
+    "flat",
+    "cracked"
+  ],
+  "original_resolution": "8k available; downloaded 2k",
+  "physical_scale_mm": 30000,
+  "physical_scale_note": "Poly Haven reported dimensions (mm): [30000, 30000], scale: 15x15 M",
+  "normalization": [
+    "greyscale float conversion",
+    "large-scale slope stripped (gaussian high-pass, sigma=512px)",
+    "remapped to full range (0.5..99.5 percentile clip)"
+  ],
+  "stored_resolution": [
+    2048,
+    2048
+  ]
+}

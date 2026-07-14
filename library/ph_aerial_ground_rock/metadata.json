@@ -1,0 +1,30 @@
+{
+  "name": "Aerial Ground Rock",
+  "source": "Poly Haven",
+  "source_url": "https://polyhaven.com/a/aerial_ground_rock",
+  "file_url": "https://dl.polyhaven.org/file/ph-assets/Textures/png/2k/aerial_ground_rock/aerial_ground_rock_disp_2k.png",
+  "license": "CC0 1.0 (https://polyhaven.com/license)",
+  "author": "Rob Tuytel",
+  "tags": [
+    "rocky-ground",
+    "dirt",
+    "stones",
+    "mud",
+    "rocks",
+    "stones",
+    "dirt",
+    "dry"
+  ],
+  "original_resolution": "8k available; downloaded 2k",
+  "physical_scale_mm": 19999.950408935547,
+  "physical_scale_note": "Poly Haven reported dimensions (mm): [19999.950408935547, 20000], scale: 20M x20M",
+  "normalization": [
+    "greyscale float conversion",
+    "large-scale slope stripped (gaussian high-pass, sigma=512px)",
+    "remapped to full range (0.5..99.5 percentile clip)"
+  ],
+  "stored_resolution": [
+    2048,
+    2048
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "farside southern highlands crater field",
+  "source": "NASA LRO LOLA GDR (LDEM_64), PDS Geosciences Node",
+  "source_url": "https://pds-geosciences.wustl.edu/missions/lro/lola.htm",
+  "file_url": "https://pds-geosciences.wustl.edu/lro/lro-l-lola-3-rdr-v1/lrolol_1xxx/data/lola_gdr/cylindrical/img/ldem_64.img",
+  "license": "Public domain (NASA/US Government work; LRO/LOLA PDS archive)",
+  "author": "NASA/GSFC LOLA team (Smith et al.)",
+  "tags": [
+    "crater",
+    "lunar",
+    "dem"
+  ],
+  "original_resolution": "global 23040x11520 @ 64 px/deg (473 m/px)",
+  "physical_scale_note": "patch centered lat=-35.0, lonE=190.0; 0.474 km/px after cos(lat) longitude-stretch correction; elevation range -6446..-1106 m. ",
+  "normalization": [
+    "greyscale float conversion",
+    "regional slope stripped (best-fit plane subtracted)",
+    "remapped to full range (0.5..99.5 percentile clip)"
+  ],
+  "stored_resolution": [
+    512,
+    512
+  ]
+}

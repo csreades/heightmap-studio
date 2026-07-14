@@ -1,0 +1,33 @@
+{
+  "name": "Road 015 C",
+  "source": "ambientCG",
+  "source_url": "https://ambientcg.com/view?id=Road015C",
+  "file_url": "https://ambientcg.com/get?file=Road015C_2K-PNG.zip",
+  "license": "CC0 1.0 (https://docs.ambientcg.com/license/)",
+  "author": "ambientCG (Lennart Demes)",
+  "tags": [
+    "asphalt",
+    "damaged",
+    "cracked",
+    "015",
+    "15",
+    "asphalt",
+    "cracked",
+    "damaged",
+    "dark",
+    "gray",
+    "layered"
+  ],
+  "original_resolution": "up to 8K available; downloaded 2K PNG",
+  "physical_scale_mm": null,
+  "physical_scale_note": "ambientCG reported dimensions (cm): (0, 0)",
+  "normalization": [
+    "greyscale float conversion",
+    "large-scale slope stripped (gaussian high-pass, sigma=512px)",
+    "remapped to full range (0.5..99.5 percentile clip)"
+  ],
+  "stored_resolution": [
+    2048,
+    2048
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "name": "Mud Cracked Dry 03",
+  "source": "Poly Haven",
+  "source_url": "https://polyhaven.com/a/mud_cracked_dry_03",
+  "file_url": "https://dl.polyhaven.org/file/ph-assets/Textures/png/2k/mud_cracked_dry_03/mud_cracked_dry_03_disp_2k.png",
+  "license": "CC0 1.0 (https://polyhaven.com/license)",
+  "author": "Dario Barresi, Dimitrios Savva",
+  "tags": [
+    "cracked-earth",
+    "dry-mud",
+    "dry",
+    "mud",
+    "sand",
+    "uneven",
+    "ground",
+    "cracked",
+    "cracks",
+    "nature"
+  ],
+  "original_resolution": "8k available; downloaded 2k",
+  "physical_scale_mm": 1500,
+  "physical_scale_note": "Poly Haven reported dimensions (mm): [1500, 1500.0001192092896], scale: None",
+  "normalization": [
+    "greyscale float conversion",
+    "large-scale slope stripped (gaussian high-pass, sigma=512px)",
+    "remapped to full range (0.5..99.5 percentile clip)"
+  ],
+  "stored_resolution": [
+    2048,
+    2048
+  ]
+}

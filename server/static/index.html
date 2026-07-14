@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Battlefield Heightmap Studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <div id="map-wrap">
+    <canvas id="map"></canvas>
+    <div id="toolbar">
+      <div class="tb-group" id="mode-buttons">
+        <button data-mode="hillshade" class="active">Hillshade</button>
+        <button data-mode="grey">Grey</button>
+        <button data-mode="color">Height</button>
+      </div>
+      <div class="tb-group">
+        <button id="btn-stamp" title="Click the map to preview a base-sized crop">Stamp mode</button>
+        <button id="btn-scaleref" title="Show a 25mm base + 2mm figure for scale">Scale ref</button>
+      </div>
+      <div class="tb-group" id="status">
+        <span id="pos"></span><span id="zoom"></span>
+      </div>
+    </div>
+    <div id="busy" hidden>rendering…</div>
+    <canvas id="base3d" hidden></canvas>
+    <div id="base3d-hint" hidden>drag to orbit · scroll to zoom · right-drag to pan</div>
+  </div>
+
+  <div id="sidebar">
+    <div id="tabs">
+      <button data-tab="layers" class="active">Layers</button>
+      <button data-tab="stamp">Stamp</button>
+      <button data-tab="bases">Bases</button>
+      <button data-tab="library">Library</button>
+    </div>
+
+    <div id="tab-layers" class="tab active">
+      <section class="global">
+        <div class="row">
+          <label>Seed</label>
+          <input id="seed" type="number" step="1">
+          <button id="btn-reroll" title="Random seed">🎲</button>
+        </div>
+        <div id="global-sliders"></div>
+      </section>
+      <div id="layer-sections"></div>
+      <section class="presets">
+        <h3>Presets</h3>
+        <div class="row">
+          <select id="preset-list"></select>
+          <button id="btn-load">Load</button>
+        </div>
+        <div class="row">
+          <input id="preset-name" type="text" placeholder="preset name">
+          <button id="btn-save">Save</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="tab-stamp" class="tab">
+      <section>
+        <h3>Stamp preview</h3>
+        <p class="hint">Enable <b>Stamp mode</b> and click the map to drop a
+        base-sized rectangle. It renders enlarged below with its height
+        histogram.</p>
+        <div id="stamp-controls"></div>
+        <div class="row">
+          <label>Rotation</label>
+          <input id="stamp-rot" type="range" min="0" max="360" step="1" value="0">
+          <span id="stamp-rot-val" class="val">0°</span>
+        </div>
+      </section>
+      <section id="stamp-result" hidden>
+        <img id="stamp-img" alt="stamp preview">
+        <div id="stamp-stats"></div>
+        <canvas id="stamp-hist" width="300" height="110"></canvas>
+        <a id="stamp-download" download="stamp_height16.png">download 16-bit heightmap</a>
+      </section>
+    </div>
+
+    <div id="tab-bases" class="tab">
+      <section>
+        <h3>3D base viewer</h3>
+        <p class="hint">Example Legions Imperialis bases (circular, mildly
+        tapered) cropped from the current domain and rendered in 3D. Layer
+        sliders apply live; use a preset via the Layers tab.</p>
+        <div class="row">
+          <label>Placement seed</label>
+          <input id="bases-seed" type="number" step="1" value="1">
+          <button id="bases-reroll" title="Random placement">🎲</button>
+        </div>
+        <div id="bases-controls"></div>
+        <div class="row">
+          <button id="bases-generate">Generate bases</button>
+          <button id="bases-export" title="Binary STL, mm units, Z-up, relief at true 1× (view exaggeration ignored)">Export STL</button>
+        </div>
+        <div id="bases-stats"></div>
+      </section>
+    </div>
+
+    <div id="tab-library" class="tab">
+      <section>
+        <h3>Bump-map library</h3>
+        <p class="hint">CC0 / public-domain heightmaps with provenance.
+        Assign a map to the cracks layer (tiled with variation) or as
+        crater stamps.</p>
+        <div id="lib-grid"></div>
+      </section>
+      <section id="lib-detail" hidden>
+        <img id="lib-preview" alt="library preview">
+        <div id="lib-meta"></div>
+        <div class="row wrap">
+          <button id="lib-assign-cracks">Use for cracks</button>
+          <button id="lib-assign-craters" title="Craters draw from a pool of stamps; clicking adds/removes this map">Toggle in crater pool</button>
+        </div>
+        <div class="row wrap">
+          <button id="lib-clear-cracks">Clear cracks source</button>
+          <button id="lib-clear-craters">Clear craters source</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<script src="/static/vendor/three.min.js"></script>
+<script src="/static/vendor/OrbitControls.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/bases.js"></script>
+</body>
+</html>

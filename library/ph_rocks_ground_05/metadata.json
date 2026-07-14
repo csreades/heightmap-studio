@@ -1,0 +1,33 @@
+{
+  "name": "Rocks Ground 05",
+  "source": "Poly Haven",
+  "source_url": "https://polyhaven.com/a/rocks_ground_05",
+  "file_url": "https://dl.polyhaven.org/file/ph-assets/Textures/png/2k/rocks_ground_05/rocks_ground_05_disp_2k.png",
+  "license": "CC0 1.0 (https://polyhaven.com/license)",
+  "author": "Rob Tuytel",
+  "tags": [
+    "rocky-ground",
+    "gravel",
+    "rubble",
+    "rough",
+    "rock",
+    "gravel",
+    "dirt",
+    "rocky",
+    "soil",
+    "uneven",
+    "stony"
+  ],
+  "original_resolution": "8k available; downloaded 2k",
+  "physical_scale_mm": 3000,
+  "physical_scale_note": "Poly Haven reported dimensions (mm): [3000, 3000], scale: 3M x 3M",
+  "normalization": [
+    "greyscale float conversion",
+    "large-scale slope stripped (gaussian high-pass, sigma=512px)",
+    "remapped to full range (0.5..99.5 percentile clip)"
+  ],
+  "stored_resolution": [
+    2048,
+    2048
+  ]
+}
