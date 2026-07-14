@@ -396,10 +396,32 @@ async function exportSTL() {
   // Fetch a fresh, high-resolution base set purely for export; the viewer
   // keeps its light mesh. Density caps scale with the export ppm so the STL
   // carries detail down to the requested pixel pitch (40 px/mm = 25 micron).
-  const hbases = await requestBases(BASE_OPTS.export_px_per_mm);
-  btn.disabled = false;
-  btn.textContent = label0;
-  if (!hbases || !hbases.length) return;
+  let hbases = null;
+  try {
+    hbases = await requestBases(BASE_OPTS.export_px_per_mm);
+  } catch (e) {
+    console.error("high-res export fetch failed:", e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label0;
+  }
+  if (!hbases || !hbases.length) {
+    alert("High-res render failed (server busy or restarted) — try again.");
+    return;
+  }
+  btn.textContent = "Building mesh…";
+  btn.disabled = true;
+  // yield one frame so the label paints before the heavy synchronous meshing
+  await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+  try {
+    exportSTLGeos(hbases);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label0;
+  }
+}
+
+function exportSTLGeos(hbases) {
   // print-true geometry: relief exaggeration forced to 1x
   const geos = baseGeometries(1.0, hbases, { rings: 8192, sect: 32768 });
   const indexOf = (g) => g.index ? g.index.array
