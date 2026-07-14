@@ -126,11 +126,12 @@ schema + defaults); presets on disk are `{"seed": ..., "config": ...}`.
     position-noise dial (0 = perfect, 1 = up to 1 mm XY error per pin,
     seeded/deterministic).
   - **Print support** — optional thin tab flush with the base's bottom
-    face, coming off the rim (parts print rotated 90°, disc on edge, tab
-    down): its edge follows the rim circle then curves in to a single
-    straight line on the build plate; configurable height, thickness,
-    line length. With supports on, the STL exports in print orientation
-    (discs on edge, every support line at z=0).
+    face (parts print rotated 90°, disc on edge, tab down): a crescent
+    whose weld line hugs a full 180° of the rim (maximum edge support,
+    still snaps off), sweeping to a straight line on the build plate
+    with a thicker raft foot for adhesion; configurable height,
+    thickness, line length, raft thickness. With supports on, the STL
+    exports in print orientation (discs on edge, raft at z=0).
   - **Base configs** — save/load the whole setup (base options, pins,
     support, placement seed) with the terrain preset embedded, to
     `presets/bases/*.json`.

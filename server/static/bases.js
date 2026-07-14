@@ -9,7 +9,7 @@ const BASE_OPTS = {
   pins_enabled: false, pin_count: 4, pin_diameter_mm: 2.0,
   pin_depth_mm: 1.0, pin_ring_frac: 0.55, pin_noise: 0.0,
   support_enabled: false, support_height_mm: 4.0,
-  support_thickness_mm: 0.8, support_base_mm: 8.0,
+  support_thickness_mm: 0.8, support_base_mm: 8.0, support_raft_mm: 2.0,
 };
 // [key, label, min, max, step, unit, refetch?]
 const BASE_PARAMS = [
@@ -34,6 +34,7 @@ const SUPPORT_PARAMS = [
   ["support_height_mm", "Height", 2, 12, 0.5, "mm"],
   ["support_thickness_mm", "Thickness", 0.4, 2.5, 0.05, "mm"],
   ["support_base_mm", "Base size", 2, 40, 0.5, "mm"],
+  ["support_raft_mm", "Raft thickness", 0.8, 4, 0.1, "mm"],
 ];
 
 let R3 = null;            // {renderer, scene, camera, controls, group}
@@ -262,50 +263,55 @@ function buildBaseGeometry(base, baseIndex, exOverride) {
   return g;
 }
 
-function buildSupportGeometry(base) {
+function buildSupportGeometries(base) {
   // Thin tab flush with the base's bottom face, coming off the rim
-  // sideways (+x) as viewed here. Parts print rotated 90° -- disc on
-  // edge -- so the tab runs down to the build plate: its edge follows
-  // the rim circle ("curves"), then sweeps in to a straight line of
-  // length support_base_mm at support_height_mm beyond the rim.
+  // sideways (+x) as viewed here; parts print rotated 90° (disc on edge,
+  // tab down). The tab's inner edge hugs the rim over a full 180° (a
+  // crescent with its weld line just inside the rim -- maximum edge
+  // support, still snaps off), then sweeps to a straight line at the
+  // plate. A thicker raft box sits on the plate for adhesion.
   const Rb = base.diameter / 2;
   const tf = BASE_OPTS.support_thickness_mm;   // plate thickness (local y)
   const S = BASE_OPTS.support_height_mm;       // rim -> build plate distance
-  const w0 = 0.65 * Rb;                        // half contact width at rim
-  const L = Math.min(BASE_OPTS.support_base_mm / 2, w0); // half line length
-  const xA = Math.sqrt(Math.max(Rb * Rb - w0 * w0, 0)) - 1.0; // embedded start
+  const L = Math.min(BASE_OPTS.support_base_mm, 2 * Rb) / 2;
+  const Ri = Rb - 0.5;                         // weld line inside the rim
   const xB = Rb + S;
-  const K = 36;
 
-  const pos = [];
-  for (let k = 0; k <= K; k++) {
-    const u = k / K;
-    const x = xA + (xB - xA) * u;
-    let h = L + (w0 - L) * Math.pow(1 - u, 2.0);   // curve -> line
-    if (x < Rb) {                                   // stay inside the rim
-      h = Math.min(h, Math.sqrt(Math.max(Rb * Rb - x * x, 1e-6)));
-    }
-    // cross-section rectangle in (y, z) at this x
-    pos.push(x, 0, h, x, tf, h, x, tf, -h, x, 0, -h);
+  // outline sampled manually (no duplicate seam points -> clean mesh):
+  // 180° inner arc just inside the rim, bezier out to the bottom line,
+  // across the line, bezier back up to the arc start
+  const pts = [];
+  const NA = 60, NB = 26;
+  for (let k = 0; k <= NA; k++) {
+    const th = Math.PI / 2 - (k / NA) * Math.PI;
+    pts.push(new THREE.Vector2(Ri * Math.cos(th), Ri * Math.sin(th)));
   }
-  const idx = [];
-  const C = 4;
-  for (let k = 0; k < K; k++) {
-    const a = k * C, b = (k + 1) * C;
-    for (let e = 0; e < C; e++) {
-      const e1 = (e + 1) % C;
-      idx.push(a + e, b + e, b + e1, a + e, b + e1, a + e1);
-    }
+  const quad = (x0, y0, cx, cy, x1, y1, t) => new THREE.Vector2(
+    (1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x1,
+    (1 - t) * (1 - t) * y0 + 2 * (1 - t) * t * cy + t * t * y1);
+  for (let k = 1; k <= NB; k++) {   // (0,-Ri) -> (xB,-L), bulging past rim
+    pts.push(quad(0, -Ri, Rb * 0.88, -(Rb + 0.55), xB, -L, k / NB));
   }
-  idx.push(0, 1, 2, 0, 2, 3);                       // inner cap (-x, in base)
-  const m = K * C;
-  idx.push(m, m + 2, m + 1, m, m + 3, m + 2);       // outer cap (+x)
+  pts.push(new THREE.Vector2(xB, L));  // across the bottom line
+  for (let k = 1; k < NB; k++) {    // (xB,+L) -> (0,+Ri), mirrored; stops
+    pts.push(quad(xB, L, Rb * 0.88, Rb + 0.55, 0, Ri, k / NB));
+  }                                 // short of the arc start (auto-close)
+  const tab = new THREE.ExtrudeGeometry(new THREE.Shape(pts), {
+    depth: tf, bevelEnabled: false,
+  });
+  // extrude space (sx, sy, sz) -> base-local (x=sx, y=sz, z=-sy);
+  // determinant +1, so face winding is preserved
+  const p = tab.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const sx = p.getX(i), sy = p.getY(i), sz = p.getZ(i);
+    p.setXYZ(i, sx, sz, -sy);
+  }
+  tab.computeVertexNormals();
 
-  const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-  g.setIndex(idx);
-  g.computeVertexNormals();
-  return g;
+  const raftT = Math.max(BASE_OPTS.support_raft_mm, tf + 0.3);
+  const raft = new THREE.BoxGeometry(1.6, raftT, 2 * L + 2);
+  raft.translate(xB - 0.8, tf / 2, 0);
+  return [tab, raft];
 }
 
 function baseGeometries(exOverride) {
@@ -315,7 +321,9 @@ function baseGeometries(exOverride) {
   lastBases.forEach((b, i) => {
     out.push({ g: buildBaseGeometry(b, i, exOverride), off: offs[i], base: b, i });
     if (BASE_OPTS.support_enabled) {
-      out.push({ g: buildSupportGeometry(b), off: offs[i], base: b, i });
+      for (const g of buildSupportGeometries(b)) {
+        out.push({ g, off: offs[i], base: b, i });
+      }
     }
   });
   return out;
@@ -362,8 +370,10 @@ function exportSTL() {
   if (!lastBases || !lastBases.length) return;
   // print-true geometry: relief exaggeration forced to 1x
   const geos = baseGeometries(1.0);
+  const indexOf = (g) => g.index ? g.index.array
+    : Uint32Array.from({ length: g.attributes.position.count }, (_, i) => i);
   let tris = 0;
-  for (const { g } of geos) tris += g.index.count / 3;
+  for (const { g } of geos) tris += indexOf(g).length / 3;
 
   const buf = new ArrayBuffer(84 + tris * 50);
   const dv = new DataView(buf);
@@ -376,7 +386,7 @@ function exportSTL() {
   const nBases = lastBases.length;
   geos.forEach(({ g, off, base, i }) => {
     const p = g.attributes.position.array;
-    const ix = g.index.array;
+    const ix = indexOf(g);
     const [ox, oz] = off;
     const rowX = (i - (nBases - 1) / 2) * pitch;
     const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm;
