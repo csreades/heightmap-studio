@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import glob
 import io
+import json
 import os
 import re
 import threading
@@ -221,6 +222,61 @@ def post_bases(body: BasesIn):
             "mean": float(crop.mean()),
         })
     return {"bases": out}
+
+
+# ------------------------------------------------------------------ bases presets
+# A bases preset embeds the full terrain preset (config + seed) plus the
+# base-viewer options, so one file reproduces the whole thing.
+
+BASES_PRESET_DIR = os.path.join(PRESET_DIR, "bases")
+
+
+class BasesPresetIn(BaseModel):
+    name: str
+    base_opts: dict
+    placement_seed: int
+    config: dict
+    seed: int
+
+
+@app.get("/api/bases_presets")
+def list_bases_presets():
+    names = [os.path.splitext(os.path.basename(p))[0]
+             for p in glob.glob(os.path.join(BASES_PRESET_DIR, "*.json"))]
+    return {"presets": sorted(names)}
+
+
+@app.post("/api/bases_presets")
+def save_bases_preset(body: BasesPresetIn):
+    if not _NAME_RE.match(body.name):
+        raise HTTPException(400, "bad preset name")
+    os.makedirs(BASES_PRESET_DIR, exist_ok=True)
+    with open(os.path.join(BASES_PRESET_DIR, f"{body.name}.json"), "w") as f:
+        json.dump({
+            "base_opts": body.base_opts,
+            "placement_seed": body.placement_seed,
+            "terrain": {"seed": body.seed,
+                        "config": merge_config(body.config)},
+        }, f, indent=2, sort_keys=True)
+    return {"ok": True}
+
+
+@app.get("/api/bases_presets/{name}")
+def load_bases_preset(name: str):
+    if not _NAME_RE.match(name):
+        raise HTTPException(400, "bad preset name")
+    path = os.path.join(BASES_PRESET_DIR, f"{name}.json")
+    if not os.path.isfile(path):
+        raise HTTPException(404, "no such bases preset")
+    with open(path) as f:
+        data = json.load(f)
+    config = merge_config(data.get("terrain", {}).get("config"))
+    seed = int(data.get("terrain", {}).get("seed", 0))
+    dom = _register(config, seed)
+    return {"base_opts": data.get("base_opts", {}),
+            "placement_seed": int(data.get("placement_seed", 1)),
+            "config": config, "seed": seed, "key": dom.key,
+            "height_range": list(dom.estimated_range())}
 
 
 # ------------------------------------------------------------------ presets

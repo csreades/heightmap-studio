@@ -117,9 +117,24 @@ schema + defaults); presets on disk are `{"seed": ..., "config": ...}`.
   size mix, base height, side taper, quality, relief-view exaggeration,
   placement seed. Layer sliders and presets apply live. Backed by
   `POST /api/bases`, which returns the raw crop grids the STL pipeline
-  would consume. **Export STL** downloads the displayed bases as a single
-  binary STL (mm units, Z-up, watertight, relief at true 1× regardless of
-  the view exaggeration) for inspection in slicers/CAD.
+  would consume. Also:
+  - **Edge lip** — the bump map fades to zero over the last N mm before
+    the rim, so the outer edge stays a crisp flat circle regardless of
+    the terrain.
+  - **Pin sockets (subtracted)** — N≥2 flat-floored holes on an
+    equidistant polar ring: configurable Ø, depth, ring radius, plus a
+    position-noise dial (0 = perfect, 1 = up to 1 mm XY error per pin,
+    seeded/deterministic).
+  - **Print support** — optional thin plate under each base (bases print
+    horizontal, support extends down): full base width at the top curving
+    to a single straight line; configurable height, thickness, bottom
+    length.
+  - **Base configs** — save/load the whole setup (base options, pins,
+    support, placement seed) with the terrain preset embedded, to
+    `presets/bases/*.json`.
+  - **Export STL** — all displayed bases (+ supports) as one binary STL:
+    mm units, Z-up, watertight shells, relief at true 1× regardless of
+    the view exaggeration.
 - **Library tab**: hillshaded thumbnails of every library entry with full
   provenance; assign any entry to the cracks layer or as crater stamps.
 
