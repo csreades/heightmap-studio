@@ -126,10 +126,14 @@ async function requestBases(ppm) {
   });
 }
 
+let lastFetchedKey = null;   // domain key the current lastBases came from
+
 async function fetchBases() {
+  const key = state.key;
   const bases = await requestBases(BASE_OPTS.px_per_mm);
   if (!bases) return;
   lastBases = bases;
+  lastFetchedKey = key;
   rebuildMeshes();
 }
 
@@ -346,13 +350,11 @@ function buildSupportGeometries(base) {
 function baseGeometries(exOverride, basesArr, caps) {
   // all closed shells for the given bases (base + optional support tab)
   const bases = basesArr || lastBases;
-  const offs = layoutOffsets(bases.length);
+  const offs = layoutOffsets(bases);
   const out = [];
   bases.forEach((b, i) => {
     out.push({ g: buildBaseGeometry(b, i, exOverride, caps), off: offs[i], base: b, i });
-    // supports belong to the on-edge print style; a stacked column prints
-    // upright directly on the plate, so they're skipped in stack mode
-    if (BASE_OPTS.support_enabled && !BASE_OPTS.stack_enabled) {
+    if (BASE_OPTS.support_enabled) {
       for (const g of buildSupportGeometries(b)) {
         out.push({ g, off: offs[i], base: b, i });
       }
@@ -372,9 +374,22 @@ function rebuildMeshes() {
     color: 0x8f939c, roughness: 0.9, metalness: 0.0,
   });
 
-  for (const { g, off } of baseGeometries()) {
+  const stackPrint = BASE_OPTS.stack_enabled && BASE_OPTS.support_enabled;
+  for (const { g, off, base } of baseGeometries()) {
     const mesh = new THREE.Mesh(g, mat);
-    mesh.position.set(off[0], off[2] || 0, off[1]);
+    if (stackPrint) {
+      // show true print orientation: disc on edge, tab down, raft below —
+      // local (x,y,z) -> viewer (z, zTop - x + rise, -y)
+      const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm;
+      mesh.matrixAutoUpdate = false;
+      mesh.matrix.set(
+        0, 0, 1, 0,
+        -1, 0, 0, zTop + (off[2] || 0),
+        0, -1, 0, 0,
+        0, 0, 0, 1);
+    } else {
+      mesh.position.set(off[0], off[2] || 0, off[1]);
+    }
     group.add(mesh);
   }
   R3.scene.add(group);
@@ -389,13 +404,27 @@ function rebuildMeshes() {
 
 // ---------------------------------------------------------------- STL export
 
-function layoutOffsets(count) {
-  // offsets are [x, z, y]; y is only nonzero in stack-for-print mode
+function layoutOffsets(bases) {
+  // offsets are [x, z, stackRise]; stackRise is only nonzero in
+  // stack-for-print mode (it is a vertical offset: viewer y / STL z)
+  const count = bases.length;
   if (BASE_OPTS.stack_enabled) {
-    // one upright, center-aligned column: base i sits base_height + gap
-    // above the one below, first base on the plate (y = 0)
+    if (BASE_OPTS.support_enabled) {
+      // full print-orientation units [disc + tab + raft] stacked: each
+      // unit spans D + support_height from its raft face to its disc top,
+      // and the next unit's raft sits `gap` above that (0 = touching)
+      const S = BASE_OPTS.support_height_mm;
+      let z = 0;
+      return bases.map((b) => {
+        const off = [0, 0, z];
+        z += b.diameter + S + BASE_OPTS.stack_gap_mm;
+        return off;
+      });
+    }
+    // no supports: flat upright column, base i sits base_height + gap
+    // above the one below, first base on the plate
     const pitch = BASE_OPTS.base_height + BASE_OPTS.stack_gap_mm;
-    return Array.from({ length: count }, (_, i) => [0, 0, i * pitch]);
+    return bases.map((_, i) => [0, 0, i * pitch]);
   }
   const perRow = Math.ceil(Math.sqrt(count));
   const pitch = Math.max(BASE_OPTS.d_small, BASE_OPTS.d_large) + 14;
@@ -454,15 +483,18 @@ function exportSTLGeos(hbases) {
   let o = 84;
   // with supports on, export in PRINT orientation: discs on edge in a row,
   // tabs pointing down, every support line landing on z=0
-  const printMode = BASE_OPTS.support_enabled && !BASE_OPTS.stack_enabled;
+  const printMode = BASE_OPTS.support_enabled;
+  const stacked = BASE_OPTS.stack_enabled;
   const pitch = Math.max(BASE_OPTS.d_small, BASE_OPTS.d_large) + 8;
   const nBases = hbases.length;
   geos.forEach(({ g, off, base, i }) => {
     const p = g.attributes.position.array;
     const ix = indexOf(g);
     const [ox, oz, oy = 0] = off;
-    const rowX = (i - (nBases - 1) / 2) * pitch;
-    const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm;
+    // stack mode: one aligned column (no row spread); each unit is only
+    // translated up by its cumulative rise — geometry/supports unchanged
+    const rowX = stacked ? 0 : (i - (nBases - 1) / 2) * pitch;
+    const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm + (printMode ? oy : 0);
     for (let k = 0; k < ix.length; k += 3) {
       // both maps have determinant +1 so the winding stays outward:
       //   flat:  (x, y, z) -> (x, -z, y)         (three.js y-up -> STL z-up)
@@ -595,8 +627,8 @@ function initBases() {
   stackNote.style.fontSize = "11px";
   stackNote.style.opacity = "0.75";
   stackNote.textContent =
-    "Upright column, centers aligned; spacing = clear gap between bases. " +
-    "Supports are ignored while stacking.";
+    "One aligned column instead of a row — no splitting/aligning needed. " +
+    "Supports export exactly as usual; spacing = clear gap between units.";
   wrap.appendChild(stackNote);
 
   // STL export resolution — independent of the viewer "Quality". The mesh at
@@ -680,7 +712,9 @@ function initBases() {
     if (active) {
       ensureThree();
       resize3d();
-      if (!lastBases) fetchBases();
+      // refetch if never fetched OR the terrain config changed while this
+      // tab was hidden (configpushed only refetches when visible)
+      if (!lastBases || lastFetchedKey !== state.key) fetchBases();
       startLoop();
     } else {
       animating = false;
