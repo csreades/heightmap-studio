@@ -5,6 +5,7 @@
 const BASE_OPTS = {
   count: 6, large_fraction: 0.35, d_small: 25, d_large: 40,
   base_height: 2.2, taper_deg: 3.9, px_per_mm: 5, exaggeration: 1.0,
+  export_px_per_mm: 40,  // STL download resolution (40 px/mm = 25 micron)
   rim_lip_mm: 1.0,
   pins_enabled: false, pin_count: 5, pin_diameter_mm: 6.1,
   pin_depth_mm: 1.4, pin_ring_frac: 0.55, pin_noise: 0.0,
@@ -40,6 +41,7 @@ const SUPPORT_PARAMS = [
 
 let R3 = null;            // {renderer, scene, camera, controls, group}
 let lastBases = null;
+let updateExportEst = () => {};   // set in initBases; refreshes the size readout
 let basesTimer = null;
 let animating = false;
 
@@ -96,8 +98,11 @@ function scheduleBases() {
   basesTimer = setTimeout(fetchBases, 400);
 }
 
-async function fetchBases() {
-  if (!state.key) return;
+async function requestBases(ppm) {
+  // one base set at the given sampling resolution; used by the viewer (low
+  // ppm) and, independently, by the STL export (high ppm) without touching
+  // the on-screen mesh.
+  if (!state.key) return null;
   const res = await fetch("/api/bases", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -107,17 +112,23 @@ async function fetchBases() {
       large_fraction: BASE_OPTS.large_fraction,
       d_small: BASE_OPTS.d_small,
       d_large: BASE_OPTS.d_large,
-      px_per_mm: BASE_OPTS.px_per_mm,
+      px_per_mm: ppm,
     }),
   });
-  if (!res.ok) return;
+  if (!res.ok) return null;
   const data = await res.json();
-  lastBases = data.bases.map((b) => {
+  return data.bases.map((b) => {
     const bin = atob(b.heights_b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return { ...b, heights: new Float32Array(bytes.buffer) };
   });
+}
+
+async function fetchBases() {
+  const bases = await requestBases(BASE_OPTS.px_per_mm);
+  if (!bases) return;
+  lastBases = bases;
   rebuildMeshes();
 }
 
@@ -169,7 +180,7 @@ function basePins(baseIndex, Rt) {
   return pins;
 }
 
-function buildBaseGeometry(base, baseIndex, exOverride) {
+function buildBaseGeometry(base, baseIndex, exOverride, caps) {
   const { heights, n, diameter: D, mean } = base;
   // LI bases are widest at the table and narrow toward the top surface:
   // nominal diameter D at the bottom, top pulled in by the taper. Fixed
@@ -183,8 +194,12 @@ function buildBaseGeometry(base, baseIndex, exOverride) {
   // match mesh density to the height grid so the rim is as sharp as the
   // center (polar sector spacing grows with radius)
   const ppm = base.px_per_mm;
-  const RINGS = Math.min(Math.max(Math.round((D / 2) * ppm * 1.2), 32), 160);
-  const SECT = Math.min(Math.max(Math.round(Math.PI * D * ppm * 1.2), 96), 640);
+  // viewer stays light (caps 160/640); export passes far higher caps so the
+  // triangle grid can actually resolve the requested pixel pitch.
+  const maxRings = caps ? caps.rings : 160;
+  const maxSect = caps ? caps.sect : 640;
+  const RINGS = Math.min(Math.max(Math.round((D / 2) * ppm * 1.2), 32), maxRings);
+  const SECT = Math.min(Math.max(Math.round(Math.PI * D * ppm * 1.2), 96), maxSect);
 
   const pos = [];
   // edge lip: displacement fades to exactly 0 over the last rim_lip_mm,
@@ -318,12 +333,13 @@ function buildSupportGeometries(base) {
   return [tab, raft];
 }
 
-function baseGeometries(exOverride) {
-  // all closed shells for the current bases (base + optional support tab)
-  const offs = layoutOffsets(lastBases.length);
+function baseGeometries(exOverride, basesArr, caps) {
+  // all closed shells for the given bases (base + optional support tab)
+  const bases = basesArr || lastBases;
+  const offs = layoutOffsets(bases.length);
   const out = [];
-  lastBases.forEach((b, i) => {
-    out.push({ g: buildBaseGeometry(b, i, exOverride), off: offs[i], base: b, i });
+  bases.forEach((b, i) => {
+    out.push({ g: buildBaseGeometry(b, i, exOverride, caps), off: offs[i], base: b, i });
     if (BASE_OPTS.support_enabled) {
       for (const g of buildSupportGeometries(b)) {
         out.push({ g, off: offs[i], base: b, i });
@@ -356,6 +372,7 @@ function rebuildMeshes() {
     `<div>#${i + 1} · Ø${b.diameter} mm · relief ${(b.max - b.min).toFixed(2)} mm ` +
     `· @(${b.x}, ${b.y}) rot ${b.rotation}°</div>`).join("");
   $("bases-stats").innerHTML = stats;
+  updateExportEst();
 }
 
 // ---------------------------------------------------------------- STL export
@@ -370,10 +387,21 @@ function layoutOffsets(count) {
   });
 }
 
-function exportSTL() {
+async function exportSTL() {
   if (!lastBases || !lastBases.length) return;
+  const btn = $("bases-export");
+  const label0 = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Rendering high-res…";
+  // Fetch a fresh, high-resolution base set purely for export; the viewer
+  // keeps its light mesh. Density caps scale with the export ppm so the STL
+  // carries detail down to the requested pixel pitch (40 px/mm = 25 micron).
+  const hbases = await requestBases(BASE_OPTS.export_px_per_mm);
+  btn.disabled = false;
+  btn.textContent = label0;
+  if (!hbases || !hbases.length) return;
   // print-true geometry: relief exaggeration forced to 1x
-  const geos = baseGeometries(1.0);
+  const geos = baseGeometries(1.0, hbases, { rings: 8192, sect: 32768 });
   const indexOf = (g) => g.index ? g.index.array
     : Uint32Array.from({ length: g.attributes.position.count }, (_, i) => i);
   let tris = 0;
@@ -387,7 +415,7 @@ function exportSTL() {
   // tabs pointing down, every support line landing on z=0
   const printMode = BASE_OPTS.support_enabled;
   const pitch = Math.max(BASE_OPTS.d_small, BASE_OPTS.d_large) + 8;
-  const nBases = lastBases.length;
+  const nBases = hbases.length;
   geos.forEach(({ g, off, base, i }) => {
     const p = g.attributes.position.array;
     const ix = indexOf(g);
@@ -501,6 +529,39 @@ function initBases() {
   wrap.appendChild(supHead);
   addToggle(wrap, "support_enabled", "Include support");
   addBaseSliders(wrap, SUPPORT_PARAMS);
+
+  // STL export resolution — independent of the viewer "Quality". The mesh at
+  // this pitch is only ever built at download time, never rendered on screen.
+  const expHead = document.createElement("h3");
+  expHead.textContent = "STL export";
+  wrap.appendChild(expHead);
+  const expNote = document.createElement("div");
+  expNote.className = "row";
+  expNote.style.fontSize = "11px";
+  expNote.style.opacity = "0.75";
+  updateExportEst = () => {
+    const ppm = BASE_OPTS.export_px_per_mm;
+    const micron = Math.round(1000 / ppm);
+    let tris = 0;
+    for (const b of (lastBases || [])) {
+      const D = b.diameter;
+      const rings = Math.min(Math.round((D / 2) * ppm * 1.2), 8192);
+      const sect = Math.min(Math.round(Math.PI * D * ppm * 1.2), 32768);
+      tris += 2 * rings * sect + 2 * sect;   // top surface + wall (approx)
+    }
+    const mb = (84 + tris * 50) / 1048576;
+    expNote.textContent = tris
+      ? `${micron} µm/px · ~${(tris / 1e6).toFixed(1)} M tris · ~${mb.toFixed(0)} MB` +
+        (mb > 400 ? "  ⚠ large — may be slow to slice" : "")
+      : `${micron} µm/px`;
+  };
+  const expRow = sliderRow("Download res", BASE_OPTS.export_px_per_mm, 5, 50, 1,
+    "px/mm", (v) => { BASE_OPTS.export_px_per_mm = v; updateExportEst(); });
+  basesRows.push({ key: "export_px_per_mm", row: expRow });
+  wrap.appendChild(expRow);
+  wrap.appendChild(expNote);
+  updateExportEst();
+
   $("bases-reroll").addEventListener("click", () => {
     $("bases-seed").value = Math.floor(Math.random() * 1e6);
     fetchBases();

@@ -206,7 +206,10 @@ def post_bases(body: BasesIn):
 
     dom = _get_domain(body.key)
     count = max(1, min(int(body.count), 24))
-    ppm = min(max(body.px_per_mm, 2.0), 12.0)
+    # Viewer requests ~5 px/mm; STL export requests much higher (25 micron =
+    # 40 px/mm). Clamp overall, then per-base so no single crop grid exceeds
+    # ~2600 px/side (bounds memory + noise-eval time on the big discs).
+    ppm = min(max(body.px_per_mm, 2.0), 50.0)
     out = []
     for i in range(count):
         def h(tag):
@@ -214,13 +217,14 @@ def post_bases(body: BasesIn):
                                 body.placement_seed & 0xFFFFFFFF))
         d = body.d_large if h(4) < body.large_fraction else body.d_small
         d = min(max(d, 5.0), 80.0)
+        ppm_i = min(ppm, 2600.0 / d)
         x = (h(1) - 0.5) * body.spread_mm
         y = (h(2) - 0.5) * body.spread_mm
         rot = h(3) * 360.0
-        crop = dom.crop(x, y, d, d, rot, ppm)
+        crop = dom.crop(x, y, d, d, rot, ppm_i)
         out.append({
             "x": round(x, 2), "y": round(y, 2), "rotation": round(rot, 1),
-            "diameter": d, "n": crop.shape[0], "px_per_mm": ppm,
+            "diameter": d, "n": crop.shape[0], "px_per_mm": ppm_i,
             "heights_b64": base64.b64encode(
                 crop.astype("<f4").tobytes()).decode(),
             "min": float(crop.min()), "max": float(crop.max()),
