@@ -9,7 +9,8 @@ const BASE_OPTS = {
   pins_enabled: false, pin_count: 4, pin_diameter_mm: 2.0,
   pin_depth_mm: 1.0, pin_ring_frac: 0.55, pin_noise: 0.0,
   support_enabled: false, support_height_mm: 4.0,
-  support_thickness_mm: 0.8, support_base_mm: 8.0, support_raft_mm: 2.0,
+  support_thickness_mm: 0.8, support_raft_mm: 2.0,
+  support_base_mm: 40.0,  // clamps to disc width -> sides go straight down
 };
 // [key, label, min, max, step, unit, refetch?]
 const BASE_PARAMS = [
