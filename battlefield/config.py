@@ -84,13 +84,13 @@ DEFAULT_CONFIG = {
             "width_mm": 9.0,
             "offset_mm": -0.12,     # corridor sink below surrounding terrain
             "shoulder_mm": 2.5,     # falloff distance beyond the corridor
-            "wobble": 0.35,         # spline waviness, fraction of segment length
+            "wobble": 0.12,         # spline waviness, fraction of segment length
             "berm_height_mm": 0.1,
             "berm_width_mm": 1.4,
-            "rut_depth_mm": 0.06,
+            "rut_depth_mm": 0.1,
             "rut_offset_mm": 2.4,   # rut centerline distance from road center
             "rut_width_mm": 0.5,
-            "crack_surface": 0.0,   # 0..1: how much crack layer shows on road
+            "crack_surface": 0.35,  # 0..1: how much crack layer shows on road
         },
         "detail": {
             "enabled": True,

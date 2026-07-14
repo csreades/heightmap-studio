@@ -103,6 +103,10 @@ class Domain:
         road_w = None
         if L["roads"]["enabled"]:
             road_w, road_rel = layers.road_field(grid, self.seed, L["roads"])
+            if crater_clear is not None:
+                # impacts blow the road away inside bowls/rims (same as
+                # plates) -- craters must interrupt roads, not be flattened
+                road_w = road_w * (1.0 - crater_clear)
             target = macro * 0.85 + road_rel
             cs = L["roads"].get("crack_surface", 0.0)
             if crack is not None and cs > 0:
@@ -119,7 +123,7 @@ class Domain:
                                  L["detail"]["scale_mm"],
                                  octaves=int(L["detail"]["octaves"])) * amp
                 if road_w is not None:
-                    det = det * (1.0 - 0.85 * road_w)
+                    det = det * (1.0 - 0.5 * road_w)
                 if plate_w is not None:
                     det = det * (1.0 - 0.6 * plate_w)
                 h = h + det

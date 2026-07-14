@@ -71,18 +71,18 @@
       "roads": {
         "berm_height_mm": 0.1,
         "berm_width_mm": 1.4,
-        "crack_surface": 0.0,
+        "crack_surface": 0.35,
         "edge_probability": 0.55,
         "enabled": true,
         "junction_probability": 0.3,
         "offset_mm": -0.12,
-        "rut_depth_mm": 0.06,
+        "rut_depth_mm": 0.1,
         "rut_offset_mm": 2.4,
         "rut_width_mm": 0.5,
         "shoulder_mm": 2.5,
         "spacing_mm": 170.0,
         "width_mm": 9.0,
-        "wobble": 0.35
+        "wobble": 0.12
       }
     },
     "master_amplitude": 1.0,

@@ -123,6 +123,9 @@ Base geometry (defaults tuned for Legions Imperialis):
   foot (2 mm tall × base width, centered on the disc's mid-thickness).
   With supports on, the STL exports in print orientation — discs on edge,
   rafts at z=0.
+
+  ![Pin sockets and crescent print support](screenshots/m10_pins_support.png)
+  ![Support tab detail — weld line hugging the rim](screenshots/m11_support_hero.png)
 - **Stack for print** — racks the print-orientation units along their thin
   axis like plates in a rack: upright, center-aligned, **every raft flat on
   the plate**, controllable clearance. Import the STL and print — no
@@ -198,6 +201,8 @@ schema + defaults); presets on disk are `{"seed": ..., "config": ...}`.
    crack layer inside bowl+rim (`crack_clearing`). Analytic profile
    (parabolic bowl, gaussian rim, exponential ejecta) available via
    `source_mix` / `source: null`. Newer craters locally carve older ones.
+
+   ![Real lunar crater stamp close-up](screenshots/m7_crater_closeup.png)
 4. **Concrete plates** — big slabs on a rotated grid, appearing in
    noise-driven patches (whole tiles in/out): expansion joints where the
    earth shows through, per-tile lift/tilt (subsided slabs), broken tiles
@@ -205,9 +210,12 @@ schema + defaults); presets on disk are `{"seed": ..., "config": ...}`.
    inside their footprint. Fully vectorized, no feature loops.
 5. **Roads** — node grid + probabilistic edges/junctions, midpoint-displaced
    and Chaikin-smoothed splines; corridor flattens terrain toward the macro
-   surface with a slight negative offset, optional berms, wheel ruts and
-   cracked surface show-through. **Off by default** (see
-   `presets/roads_instead_of_plates.json`).
+   surface with a slight negative offset, length-varying berms, wheel ruts
+   and cracked-surface show-through. **Craters interrupt roads** (impacts
+   blow the roadbed away inside bowl + rim, same as plates). **Off by
+   default** (see `presets/roads_instead_of_plates.json`):
+
+   ![Roads — worn tracks across cracked earth, interrupted by impacts](screenshots/readme_roads.jpg)
 6. **Detail noise** — final high-frequency layer (suppressed on roads and
    damped on plates).
 
@@ -227,13 +235,17 @@ provenance; assign any entry to the cracks layer or as crater stamps.
 
 ![Library tab — sourced heightmaps with provenance](screenshots/readme_library.jpg)
 
-Starter set (sourced by `scripts/source_maps.py`):
+Starter set — 17 entries:
 
 | entries | source | license |
 |---|---|---|
 | cracked mud ×3, tire-rut mud, rocky ground ×2, cracked asphalt | Poly Haven | CC0 1.0 |
 | fine gravel, damaged asphalt, dry eroded dirt | ambientCG | CC0 1.0 |
-| Tycho, Copernicus, farside highlands field (LOLA LDEM_16 DEM patches) | NASA LRO LOLA / PDS | public domain |
+| crater stamp pool ×6 — Tycho, Copernicus, Theophilus, King, Aristarchus, Bürg — plus a farside highlands field (all LOLA LDEM_64 extracts) | NASA LRO LOLA / PDS | public domain |
+
+Not every entry is wired into a preset — the library is a palette: any
+entry can be assigned to the cracks layer or the crater stamp pool from
+the Library tab.
 
 Only CC0 / public-domain sources are in the manifest; anything with an
 unclear license is skipped by policy.

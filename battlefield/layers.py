@@ -325,7 +325,11 @@ def road_field(grid: CoordGrid, seed: int, cfg: dict):
         bw = max(cfg["berm_width_mm"], 1e-6)
         bc = hw + 0.45 * bw
         berm = cfg["berm_height_mm"] * np.exp(-((d - bc) / bw) ** 2)
-        rel += np.where(d < bc + 6.0 * bw, berm, 0.0)
+        # vary the berm along its length so it reads as pushed-up dirt
+        # rather than uniform piping (low-frequency, deterministic)
+        bvar = 0.55 + 0.45 * fbm(grid.X, grid.Y, seed_for(seed, "bermvar"),
+                                 18.0, octaves=2)
+        rel += np.where(d < bc + 6.0 * bw, berm * bvar, 0.0)
     if cfg["rut_depth_mm"] > 0:
         rw = max(cfg["rut_width_mm"], 1e-6)
         rut = cfg["rut_depth_mm"] * np.exp(-((d - cfg["rut_offset_mm"]) / rw) ** 2)
