@@ -330,10 +330,15 @@ function buildSupportGeometries(base) {
   const raftT = Math.max(BASE_OPTS.support_raft_mm, tf + 0.3);
   // raft: thickness raftT (slider), 2 mm tall off the plate, exactly the
   // base width long (2L clamps to the disc diameter at the default
-  // support_base_mm)
+  // support_base_mm). Centered on the disc's mid-thickness (base_height/2),
+  // not the thin tab, so on the plate it sits symmetrically under the
+  // on-edge disc instead of sticking out one side.
   const raftH = 2.0;
+  // ...but never so high that it loses contact with the tab (thin rafts):
+  // keep the raft's lower face at least 0.1 mm into the tab's thickness.
+  const cy = Math.min(BASE_OPTS.base_height / 2, tf - 0.1 + raftT / 2);
   const raft = new THREE.BoxGeometry(raftH, raftT, 2 * L);
-  raft.translate(xB - raftH / 2, tf / 2, 0);
+  raft.translate(xB - raftH / 2, cy, 0);
   return [tab, raft];
 }
 
