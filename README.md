@@ -125,10 +125,12 @@ schema + defaults); presets on disk are `{"seed": ..., "config": ...}`.
     equidistant polar ring: configurable Ø, depth, ring radius, plus a
     position-noise dial (0 = perfect, 1 = up to 1 mm XY error per pin,
     seeded/deterministic).
-  - **Print support** — optional thin plate under each base (bases print
-    horizontal, support extends down): full base width at the top curving
-    to a single straight line; configurable height, thickness, bottom
-    length.
+  - **Print support** — optional thin tab flush with the base's bottom
+    face, coming off the rim (parts print rotated 90°, disc on edge, tab
+    down): its edge follows the rim circle then curves in to a single
+    straight line on the build plate; configurable height, thickness,
+    line length. With supports on, the STL exports in print orientation
+    (discs on edge, every support line at z=0).
   - **Base configs** — save/load the whole setup (base options, pins,
     support, placement seed) with the terrain preset embedded, to
     `presets/bases/*.json`.

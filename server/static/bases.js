@@ -263,23 +263,30 @@ function buildBaseGeometry(base, baseIndex, exOverride) {
 }
 
 function buildSupportGeometry(base) {
-  // thin plate under the base: full-width at the bottom face, curving in
-  // to a single straight line at the build plate (bases print horizontal,
-  // support extends down)
+  // Thin tab flush with the base's bottom face, coming off the rim
+  // sideways (+x) as viewed here. Parts print rotated 90° -- disc on
+  // edge -- so the tab runs down to the build plate: its edge follows
+  // the rim circle ("curves"), then sweeps in to a straight line of
+  // length support_base_mm at support_height_mm beyond the rim.
   const Rb = base.diameter / 2;
-  const t = BASE_OPTS.support_thickness_mm;
-  const S = BASE_OPTS.support_height_mm;
-  const topHalf = Rb * 0.97;
-  const L = Math.min(BASE_OPTS.support_base_mm / 2, topHalf);
-  const K = 28;
+  const tf = BASE_OPTS.support_thickness_mm;   // plate thickness (local y)
+  const S = BASE_OPTS.support_height_mm;       // rim -> build plate distance
+  const w0 = 0.65 * Rb;                        // half contact width at rim
+  const L = Math.min(BASE_OPTS.support_base_mm / 2, w0); // half line length
+  const xA = Math.sqrt(Math.max(Rb * Rb - w0 * w0, 0)) - 1.0; // embedded start
+  const xB = Rb + S;
+  const K = 36;
 
   const pos = [];
   for (let k = 0; k <= K; k++) {
     const u = k / K;
-    const y = 0.4 - (S + 0.4) * u;        // starts 0.4mm inside the base
-    const w = L + (topHalf - L) * Math.pow(1 - u, 2.2);  // curve -> line
-    // cross-section rectangle corners, CCW seen from +y
-    pos.push(w, y, t / 2, w, y, -t / 2, -w, y, -t / 2, -w, y, t / 2);
+    const x = xA + (xB - xA) * u;
+    let h = L + (w0 - L) * Math.pow(1 - u, 2.0);   // curve -> line
+    if (x < Rb) {                                   // stay inside the rim
+      h = Math.min(h, Math.sqrt(Math.max(Rb * Rb - x * x, 1e-6)));
+    }
+    // cross-section rectangle in (y, z) at this x
+    pos.push(x, 0, h, x, tf, h, x, tf, -h, x, 0, -h);
   }
   const idx = [];
   const C = 4;
@@ -290,9 +297,9 @@ function buildSupportGeometry(base) {
       idx.push(a + e, b + e, b + e1, a + e, b + e1, a + e1);
     }
   }
-  idx.push(0, 1, 2, 0, 2, 3);                       // top cap (+y)
+  idx.push(0, 1, 2, 0, 2, 3);                       // inner cap (-x, in base)
   const m = K * C;
-  idx.push(m, m + 2, m + 1, m, m + 3, m + 2);       // bottom cap (-y)
+  idx.push(m, m + 2, m + 1, m, m + 3, m + 2);       // outer cap (+x)
 
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
@@ -302,13 +309,13 @@ function buildSupportGeometry(base) {
 }
 
 function baseGeometries(exOverride) {
-  // all closed shells for the current bases (base + optional support fin)
+  // all closed shells for the current bases (base + optional support tab)
   const offs = layoutOffsets(lastBases.length);
   const out = [];
   lastBases.forEach((b, i) => {
-    out.push({ g: buildBaseGeometry(b, i, exOverride), off: offs[i] });
+    out.push({ g: buildBaseGeometry(b, i, exOverride), off: offs[i], base: b, i });
     if (BASE_OPTS.support_enabled) {
-      out.push({ g: buildSupportGeometry(b), off: offs[i] });
+      out.push({ g: buildSupportGeometry(b), off: offs[i], base: b, i });
     }
   });
   return out;
@@ -362,18 +369,29 @@ function exportSTL() {
   const dv = new DataView(buf);
   dv.setUint32(80, tris, true);
   let o = 84;
-  geos.forEach(({ g, off }) => {
+  // with supports on, export in PRINT orientation: discs on edge in a row,
+  // tabs pointing down, every support line landing on z=0
+  const printMode = BASE_OPTS.support_enabled;
+  const pitch = Math.max(BASE_OPTS.d_small, BASE_OPTS.d_large) + 8;
+  const nBases = lastBases.length;
+  geos.forEach(({ g, off, base, i }) => {
     const p = g.attributes.position.array;
     const ix = g.index.array;
     const [ox, oz] = off;
+    const rowX = (i - (nBases - 1) / 2) * pitch;
+    const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm;
     for (let k = 0; k < ix.length; k += 3) {
-      // three.js y-up -> STL z-up (mm): (x, y, z) -> (x, -z, y);
-      // this map has determinant +1 so the winding stays outward
+      // both maps have determinant +1 so the winding stays outward:
+      //   flat:  (x, y, z) -> (x, -z, y)         (three.js y-up -> STL z-up)
+      //   print: (x, y, z) -> (z + row, y, zTop - x)   (disc on edge)
       const v = [];
-      const zShift = BASE_OPTS.support_enabled ? BASE_OPTS.support_height_mm : 0;
       for (let m = 0; m < 3; m++) {
         const a = ix[k + m] * 3;
-        v.push([p[a] + ox, -(p[a + 2] + oz), p[a + 1] + zShift]);
+        if (printMode) {
+          v.push([p[a + 2] + rowX, p[a + 1], zTop - p[a]]);
+        } else {
+          v.push([p[a] + ox, -(p[a + 2] + oz), p[a + 1]]);
+        }
       }
       const ux = v[1][0] - v[0][0], uy = v[1][1] - v[0][1], uz = v[1][2] - v[0][2];
       const wx = v[2][0] - v[0][0], wy = v[2][1] - v[0][1], wz = v[2][2] - v[0][2];
