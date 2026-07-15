@@ -221,10 +221,12 @@ function buildBaseGeometry(base, baseIndex, exOverride, caps) {
   // pins: flat-floored sockets, depth measured from the surface at the pin
   const pins = basePins(baseIndex, Rt);
   for (const p of pins) {
-    // depth measured from the local (textured) surface, but never leave
-    // less than 0.6 mm of material under the socket -- a thinner membrane
-    // tears in resin and the socket prints as a through-hole
-    p.floor = Math.max(surf(p.x, p.z) - BASE_OPTS.pin_depth_mm, 0.6);
+    // depth measured from the NOMINAL slab top (base_height), not the
+    // textured surface: every socket floor sits on one global plane
+    // (base_height - pin_depth) so mounted models are all at the same
+    // height, on every pin of every base. Terrain only changes how deep
+    // the socket rim is. Clamped to keep >=0.6 mm of printable material.
+    p.floor = Math.max(H - BASE_OPTS.pin_depth_mm, 0.6);
   }
   const topY = (x, z) => {
     let y = surf(x, z);
