@@ -11,6 +11,7 @@ shading modes reuse the cached height array.
 from __future__ import annotations
 
 import base64
+import datetime
 import glob
 import io
 import json
@@ -231,6 +232,24 @@ def post_bases(body: BasesIn):
             "mean": float(crop.mean()),
         })
     return {"bases": out}
+
+
+# ------------------------------------------------------------------ export log
+
+EXPORT_LOG = os.path.join(ROOT, "exports.jsonl")
+_export_log_lock = threading.Lock()
+
+
+@app.post("/api/log_export")
+def log_export(body: dict):
+    """Append one JSON line per STL export: full base options, seeds and
+    terrain config, so any past export can be reproduced exactly."""
+    entry = {"ts": datetime.datetime.now(datetime.timezone.utc)
+                   .isoformat(timespec="seconds"), **body}
+    with _export_log_lock:
+        with open(EXPORT_LOG, "a") as f:
+            f.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    return {"ok": True}
 
 
 # ------------------------------------------------------------------ bases presets

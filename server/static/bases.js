@@ -495,6 +495,19 @@ function exportSTLGeos(hbases) {
 
   const buf = new ArrayBuffer(84 + tris * 50);
   const dv = new DataView(buf);
+  // bake a compact param summary into the 80-byte STL header (ignored by
+  // every slicer; must not start with "solid"). Full params go in the
+  // .params.json sidecar + the server-side exports.jsonl log.
+  const placeSeed = parseInt($("bases-seed").value) || 1;
+  const hdr = (`HMS1 tseed=${state.seed} place=${placeSeed} ` +
+    `ppm=${BASE_OPTS.export_px_per_mm} n=${hbases.length} ` +
+    `H=${BASE_OPTS.base_height} taper=${BASE_OPTS.taper_deg} ` +
+    `pins=${BASE_OPTS.pins_enabled
+      ? `${BASE_OPTS.pin_count}x${BASE_OPTS.pin_diameter_mm}x${BASE_OPTS.pin_depth_mm}`
+      : "off"} ` +
+    `sup=${BASE_OPTS.support_enabled ? 1 : 0} stack=${BASE_OPTS.stack_enabled ? 1 : 0}`
+  ).slice(0, 79);
+  for (let i = 0; i < hdr.length; i++) dv.setUint8(i, hdr.charCodeAt(i) & 0x7f);
   dv.setUint32(80, tris, true);
   let o = 84;
   // with supports on, export in PRINT orientation: discs on edge in a row,
@@ -545,12 +558,30 @@ function exportSTLGeos(hbases) {
     g.dispose();
   });
 
-  const seed = parseInt($("bases-seed").value) || 1;
+  const stem = `bases_seed${state.seed}_place${placeSeed}`;
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([buf], { type: "model/stl" }));
-  a.download = `bases_seed${state.seed}_place${seed}.stl`;
+  a.download = `${stem}.stl`;
   a.click();
   URL.revokeObjectURL(a.href);
+
+  // full reproducible record: sidecar next to the STL + server-side log
+  const record = {
+    file: `${stem}.stl`, tris,
+    base_opts: { ...BASE_OPTS },
+    placement_seed: placeSeed,
+    terrain: { seed: state.seed, config: state.config },
+  };
+  const j = document.createElement("a");
+  j.href = URL.createObjectURL(new Blob(
+    [JSON.stringify(record, null, 1)], { type: "application/json" }));
+  j.download = `${stem}.params.json`;
+  j.click();
+  URL.revokeObjectURL(j.href);
+  fetch("/api/log_export", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(record),
+  }).catch(() => {});
 }
 
 async function refreshBasesPresets() {
