@@ -145,33 +145,36 @@
         'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">';
       for (const [k, v] of Object.entries(metadata || {}))
         yield `<metadata name="${xmlEscape(k)}">${xmlEscape(String(v))}</metadata>`;
-      yield "<resources>";
-      for (let mi = 0; mi < meshes.length; mi++) {
-        const { positions, index, map } = meshes[mi];
-        yield `<object id="${mi + 1}" type="model"><mesh><vertices>`;
+      // ONE object holding every shell: slicers treat each 3MF object as a
+      // separate movable part, and these shells (bases + welded-on
+      // supports) must never be re-arranged relative to each other.
+      yield '<resources><object id="1" type="model"><mesh><vertices>';
+      let buf = "";
+      for (const { positions, map } of meshes) {
         const nv = positions.length / 3;
-        let buf = "";
         for (let i = 0; i < nv; i++) {
           const [x, y, z] = map(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
           buf += `<vertex x="${x.toFixed(3)}" y="${y.toFixed(3)}" z="${z.toFixed(3)}"/>`;
           if (buf.length > 1 << 16) { yield buf; buf = ""; }
         }
-        if (buf) yield buf;
-        yield "</vertices><triangles>";
-        buf = "";
+      }
+      if (buf) yield buf;
+      yield "</vertices><triangles>";
+      buf = "";
+      let vbase = 0;
+      for (const { positions, index } of meshes) {
+        const nv = positions.length / 3;
         const nt = index ? index.length / 3 : nv / 3;
-        const ix = (k) => index ? index[k] : k;
+        const ix = (k) => vbase + (index ? index[k] : k);
         for (let t = 0; t < nt; t++) {
           buf += `<triangle v1="${ix(t * 3)}" v2="${ix(t * 3 + 1)}" v3="${ix(t * 3 + 2)}"/>`;
           if (buf.length > 1 << 16) { yield buf; buf = ""; }
         }
-        if (buf) yield buf;
-        yield "</triangles></mesh></object>";
+        vbase += nv;
       }
-      yield "</resources><build>";
-      for (let mi = 0; mi < meshes.length; mi++)
-        yield `<item objectid="${mi + 1}"/>`;
-      yield "</build></model>";
+      if (buf) yield buf;
+      yield "</triangles></mesh></object></resources>" +
+        '<build><item objectid="1"/></build></model>';
     }
 
     await zip.addDeflated("3D/3dmodel.model", modelChunks());

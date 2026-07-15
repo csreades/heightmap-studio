@@ -219,7 +219,7 @@ function qrDepthAt(x, z, qr, sideMM, depth) {
   return Math.min(depth, Math.min(du, dv));   // 45° chamfer walls
 }
 
-function buildBaseGeometry(base, baseIndex, exOverride, caps) {
+function buildBaseGeometry(base, baseIndex, exOverride, caps, weld) {
   const { heights, n, diameter: D, mean } = base;
   // LI bases are widest at the table and narrow toward the top surface:
   // nominal diameter D at the bottom, top pulled in by the taper. Fixed
@@ -283,10 +283,19 @@ function buildBaseGeometry(base, baseIndex, exOverride, caps) {
     }
   }
   const rimStart = 1 + (RINGS - 1) * SECT;             // top rim ring index
-  const wallTop = pos.length / 3;                      // duplicated rim (sharp edge)
-  for (let j = 0; j < SECT; j++) {
-    const k = (rimStart + j) * 3;
-    pos.push(pos[k], pos[k + 1], pos[k + 2]);
+  // Viewer: duplicate the rim ring so computeVertexNormals gives a sharp
+  // edge. Export (weld=true): share the ring instead — duplicated indices
+  // split each base into two open-edged components in index-based formats
+  // (3MF), which slicers report as unconnected geometry.
+  let wallTop;
+  if (weld) {
+    wallTop = rimStart;
+  } else {
+    wallTop = pos.length / 3;
+    for (let j = 0; j < SECT; j++) {
+      const k = (rimStart + j) * 3;
+      pos.push(pos[k], pos[k + 1], pos[k + 2]);
+    }
   }
   const wallBot = pos.length / 3;
   for (let j = 0; j < SECT; j++) {
@@ -419,13 +428,13 @@ function buildSupportGeometries(base) {
   return [tab, raft];
 }
 
-function baseGeometries(exOverride, basesArr, caps) {
+function baseGeometries(exOverride, basesArr, caps, weld) {
   // all closed shells for the given bases (base + optional support tab)
   const bases = basesArr || lastBases;
   const offs = layoutOffsets(bases);
   const out = [];
   bases.forEach((b, i) => {
-    out.push({ g: buildBaseGeometry(b, i, exOverride, caps), off: offs[i], base: b, i });
+    out.push({ g: buildBaseGeometry(b, i, exOverride, caps, weld), off: offs[i], base: b, i });
     if (BASE_OPTS.support_enabled) {
       for (const g of buildSupportGeometries(b)) {
         out.push({ g, off: offs[i], base: b, i });
@@ -580,17 +589,56 @@ function geoMap(off, base, i, nBases, printMode, stacked, pitch) {
   return (x, y, z) => [x + ox, -(z + oz), y + oy];
 }
 
+// Position-weld a non-indexed (soup) mesh into indexed form. 3MF
+// connectivity is by index, so soup arrives in slicers as one
+// disconnected part PER TRIANGLE (the support tab is an ExtrudeGeometry,
+// which three.js emits non-indexed — thousands of phantom parts).
+function weldIndexed(positions) {
+  const keyOf = new Map();
+  const outPos = [];
+  const index = new Uint32Array(positions.length / 3);
+  for (let i = 0; i < positions.length / 3; i++) {
+    const x = positions[i * 3], y = positions[i * 3 + 1], z = positions[i * 3 + 2];
+    const k = `${x},${y},${z}`;
+    let id = keyOf.get(k);
+    if (id === undefined) {
+      id = outPos.length / 3;
+      keyOf.set(k, id);
+      outPos.push(x, y, z);
+    }
+    index[i] = id;
+  }
+  return { positions: Float32Array.from(outPos), index };
+}
+
 async function export3MFGeos(hbases, record, minted) {
-  const geos = baseGeometries(1.0, hbases, { rings: 8192, sect: 32768 });
+  const geos = baseGeometries(1.0, hbases, { rings: 8192, sect: 32768 }, true);
   const printMode = BASE_OPTS.support_enabled;
   const stacked = BASE_OPTS.stack_enabled;
   const pitch = Math.max(BASE_OPTS.d_small, BASE_OPTS.d_large) + 8;
   const guid = minted ? minted.guid : null;
-  const meshes = geos.map(({ g, off, base, i }) => ({
-    positions: g.attributes.position.array,
-    index: g.index ? g.index.array : null,
-    map: geoMap(off, base, i, hbases.length, printMode, stacked, pitch),
-  }));
+  const meshes = geos.map(({ g, off, base, i }) => {
+    let positions = g.attributes.position.array;
+    let index = g.index ? g.index.array : null;
+    // weld soup meshes (ExtrudeGeometry tab) AND small indexed ones whose
+    // faces don't share vertices (BoxGeometry raft = 6 disconnected quads
+    // with 24 open edges by index); the disc grids are already welded
+    if (!index) {
+      ({ positions, index } = weldIndexed(positions));
+    } else if (positions.length / 3 <= 10000) {
+      const soup = new Float32Array(index.length * 3);
+      for (let k = 0; k < index.length; k++) {
+        soup[k * 3] = positions[index[k] * 3];
+        soup[k * 3 + 1] = positions[index[k] * 3 + 1];
+        soup[k * 3 + 2] = positions[index[k] * 3 + 2];
+      }
+      ({ positions, index } = weldIndexed(soup));
+    }
+    return {
+      positions, index,
+      map: geoMap(off, base, i, hbases.length, printMode, stacked, pitch),
+    };
+  });
   const meta = {
     Application: "Battlefield Heightmap Studio",
     Title: guid ? `bases ${guid}` : "bases",
@@ -612,7 +660,7 @@ async function export3MFGeos(hbases, record, minted) {
 
 function exportSTLGeos(hbases, record, guid) {
   // print-true geometry: relief exaggeration forced to 1x
-  const geos = baseGeometries(1.0, hbases, { rings: 8192, sect: 32768 });
+  const geos = baseGeometries(1.0, hbases, { rings: 8192, sect: 32768 }, true);
   const indexOf = (g) => g.index ? g.index.array
     : Uint32Array.from({ length: g.attributes.position.count }, (_, i) => i);
   let tris = 0;
