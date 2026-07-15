@@ -221,13 +221,18 @@ function buildBaseGeometry(base, baseIndex, exOverride, caps) {
   // pins: flat-floored sockets, depth measured from the surface at the pin
   const pins = basePins(baseIndex, Rt);
   for (const p of pins) {
-    p.floor = Math.max(surf(p.x, p.z) - BASE_OPTS.pin_depth_mm, 0.15);
+    // depth measured from the local (textured) surface, but never leave
+    // less than 0.6 mm of material under the socket -- a thinner membrane
+    // tears in resin and the socket prints as a through-hole
+    p.floor = Math.max(surf(p.x, p.z) - BASE_OPTS.pin_depth_mm, 0.6);
   }
   const topY = (x, z) => {
     let y = surf(x, z);
     for (const p of pins) {
       const dx = x - p.x, dz = z - p.z;
-      if (dx * dx + dz * dz <= p.r * p.r) y = Math.min(y, p.floor);
+      // strict flat floor: also fills terrain dips inside the socket so
+      // pins/magnets always seat on a true plane
+      if (dx * dx + dz * dz <= p.r * p.r) y = p.floor;
     }
     return y;
   };
