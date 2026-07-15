@@ -211,26 +211,40 @@ def post_bases(body: BasesIn):
     # 40 px/mm). Clamp overall, then per-base so no single crop grid exceeds
     # ~2600 px/side (bounds memory + noise-eval time on the big discs).
     ppm = min(max(body.px_per_mm, 2.0), 50.0)
-    out = []
+
+    specs = []
     for i in range(count):
-        def h(tag):
+        def h(tag, i=i):
             return float(hash01(np.int64(i), np.int64(tag),
                                 body.placement_seed & 0xFFFFFFFF))
         d = body.d_large if h(4) < body.large_fraction else body.d_small
         d = min(max(d, 5.0), 80.0)
-        ppm_i = min(ppm, 2600.0 / d)
-        x = (h(1) - 0.5) * body.spread_mm
-        y = (h(2) - 0.5) * body.spread_mm
-        rot = h(3) * 360.0
-        crop = dom.crop(x, y, d, d, rot, ppm_i)
-        out.append({
-            "x": round(x, 2), "y": round(y, 2), "rotation": round(rot, 1),
-            "diameter": d, "n": crop.shape[0], "px_per_mm": ppm_i,
+        specs.append({
+            "d": d, "ppm": min(ppm, 2600.0 / d),
+            "x": (h(1) - 0.5) * body.spread_mm,
+            "y": (h(2) - 0.5) * body.spread_mm,
+            "rot": h(3) * 360.0,
+        })
+
+    # crops are pure functions of world coordinates and the heavy numpy
+    # work releases the GIL, so render across cores instead of serially
+    # on one (a 12-base high-res fetch was ~4x slower than needed here)
+    def render(s):
+        crop = dom.crop(s["x"], s["y"], s["d"], s["d"], s["rot"], s["ppm"])
+        return {
+            "x": round(s["x"], 2), "y": round(s["y"], 2),
+            "rotation": round(s["rot"], 1),
+            "diameter": s["d"], "n": crop.shape[0], "px_per_mm": s["ppm"],
             "heights_b64": base64.b64encode(
                 crop.astype("<f4").tobytes()).decode(),
             "min": float(crop.min()), "max": float(crop.max()),
             "mean": float(crop.mean()),
-        })
+        }
+
+    from concurrent.futures import ThreadPoolExecutor
+    workers = max(1, min(count, os.cpu_count() or 2))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        out = list(pool.map(render, specs))
     return {"bases": out}
 
 
