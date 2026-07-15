@@ -555,7 +555,17 @@ async function doExport(kind) {
     terrain: { seed: state.seed, config: state.config },
   };
   let guid = null, minted = null;
-  try {
+  if (window.__reuse_guid) {
+    // re-export of an existing record (scripts/reexport.py): keep the
+    // original guid so the QR, filename and /b/ link stay unchanged
+    guid = window.__reuse_guid;
+    try {
+      const r = await fetch(`/api/exports/${guid}`);
+      const rec = await r.json();
+      minted = { guid, schema: rec.schema,
+                 generator_commit: rec.current_generator_commit };
+    } catch (e) { minted = { guid, schema: 1, generator_commit: "reexport" }; }
+  } else try {
     const r = await fetch("/api/log_export", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(record),
