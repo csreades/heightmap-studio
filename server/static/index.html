@@ -96,6 +96,7 @@
         <div class="row">
           <button id="bases-generate">Generate bases</button>
           <button id="bases-export" title="Binary STL, mm units, Z-up, relief at true 1× (view exaggeration ignored)">Export STL</button>
+          <button id="bases-export3mf" title="3MF (zip-compressed, ~4-5× smaller than STL) with the full setup embedded as metadata">Export 3MF</button>
         </div>
         <h3>Base configs <span class="hint">(embed the terrain preset)</span></h3>
         <div class="row">
@@ -133,6 +134,8 @@
     </div>
   </div>
 </div>
+<script src="/static/vendor/qr.js"></script>
+<script src="/static/threemf.js"></script>
 <script src="/static/vendor/three.min.js"></script>
 <script src="/static/vendor/OrbitControls.js"></script>
 <script src="/static/app.js"></script>

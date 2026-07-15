@@ -10,6 +10,7 @@ const BASE_OPTS = {
   pins_enabled: false, pin_count: 5, pin_diameter_mm: 6.1,
   pin_depth_mm: 1.4, pin_ring_frac: 0.55, pin_noise: 0.0,
   stack_enabled: false, stack_gap_mm: 2.0,
+  qr_enabled: true, qr_depth_mm: 0.25,   // traceability QR debossed in the bottom
   support_enabled: false, support_height_mm: 4.0,
   support_thickness_mm: 0.4, support_raft_mm: 2.0,
   support_base_mm: 40.0,  // clamps to disc width -> sides go straight down
@@ -63,6 +64,9 @@ function ensureThree() {
   const key = new THREE.DirectionalLight(0xffffff, 0.65);
   key.position.set(-60, 45, 40);   // low sun angle so mm relief reads
   scene.add(key);
+  const under = new THREE.DirectionalLight(0xcfd8e8, 0.3);   // so the bottom QR is inspectable
+  under.position.set(0.5, -1, 0.3);
+  scene.add(under);
   const fill = new THREE.DirectionalLight(0x7f9fd0, 0.12);
   fill.position.set(70, 30, -60);
   scene.add(fill);
@@ -185,6 +189,36 @@ function basePins(baseIndex, Rt) {
   return pins;
 }
 
+// ------------------------------------------------------- bottom QR deboss
+//
+// The bottom face carries a QR code linking to the complete setup that
+// produced the export (https://limp.csreades.org/b/<guid>). Dark modules
+// are debossed as 45°-chamfered recesses (inverted frustums), so the
+// bottom prints supportless in any orientation; a contrasting wash in the
+// recesses makes it scan. The viewer shows a placeholder QR (site root)
+// until an export mints a real guid.
+const QR_CANONICAL = "https://limp.csreades.org";
+let activeQR = null;   // {size, matrix} used by buildBaseGeometry
+function placeholderQR() {
+  if (!placeholderQR._q) placeholderQR._q = qrEncode(`${QR_CANONICAL}/`);
+  return placeholderQR._q;
+}
+
+// depth of the deboss at base-local (x, z); 0 outside dark modules.
+// Mirrored in x so the code reads correctly when the base is flipped over.
+function qrDepthAt(x, z, qr, sideMM, depth) {
+  const n = qr.size;
+  const w = sideMM / n;
+  const u = (-x + sideMM / 2) / w;    // view-from-below mirror
+  const v = (z + sideMM / 2) / w;
+  if (u <= 0 || v <= 0 || u >= n || v >= n) return 0;
+  const cx = Math.floor(u), cy = Math.floor(v);
+  if (qr.matrix[cy * n + cx] !== 1) return 0;
+  const du = Math.min(u - cx, cx + 1 - u) * w;
+  const dv = Math.min(v - cy, cy + 1 - v) * w;
+  return Math.min(depth, Math.min(du, dv));   // 45° chamfer walls
+}
+
 function buildBaseGeometry(base, baseIndex, exOverride, caps) {
   const { heights, n, diameter: D, mean } = base;
   // LI bases are widest at the table and narrow toward the top surface:
@@ -259,8 +293,31 @@ function buildBaseGeometry(base, baseIndex, exOverride, caps) {
     const a = (j / SECT) * Math.PI * 2;
     pos.push(Rb * Math.cos(a), 0, Rb * Math.sin(a));
   }
+  // bottom: flat fan normally; with QR enabled, a polar grid dense enough
+  // to resolve the debossed modules inside the QR square, then one jump
+  // ring out to the rim (the rest of the bottom stays flat).
+  const qr = BASE_OPTS.qr_enabled ? (activeQR || placeholderQR()) : null;
+  const qrSide = 0.62 * D;
+  const qrDepth = BASE_OPTS.qr_depth_mm;
+  const botY = qr ? ((x, z) => qrDepthAt(x, z, qr, qrSide, qrDepth)) : (() => 0);
+  let botRings = [];                 // vertex index of each bottom ring
   const botCenter = pos.length / 3;
-  pos.push(0, 0, 0);
+  pos.push(0, botY(0, 0), 0);
+  if (qr) {
+    const rq = Math.min(Rb - 0.5, qrSide * 0.75);
+    const step = Math.max(0.06, 1.0 / ppm);
+    const nq = Math.max(8, Math.ceil(rq / step));
+    for (let i = 1; i <= nq; i++) {
+      const r = (i / nq) * rq;
+      botRings.push(pos.length / 3);
+      for (let j = 0; j < SECT; j++) {
+        const a = (j / SECT) * Math.PI * 2;
+        const x = r * Math.cos(a), z = r * Math.sin(a);
+        pos.push(x, botY(x, z), z);
+      }
+    }
+  }
+  botRings.push(wallBot);            // outermost bottom ring = wall base
 
   const idx = [];
   for (let j = 0; j < SECT; j++)                        // top center fan
@@ -277,8 +334,16 @@ function buildBaseGeometry(base, baseIndex, exOverride, caps) {
     idx.push(wallTop + j, wallBot + j, wallBot + j1,
              wallTop + j, wallBot + j1, wallTop + j1);
   }
-  for (let j = 0; j < SECT; j++)                        // bottom fan
-    idx.push(botCenter, wallBot + ((j + 1) % SECT), wallBot + j);
+  for (let j = 0; j < SECT; j++)                        // bottom center fan
+    idx.push(botCenter, botRings[0] + ((j + 1) % SECT), botRings[0] + j);
+  for (let i = 0; i < botRings.length - 1; i++) {       // bottom ring quads
+    const b0 = botRings[i], b1 = botRings[i + 1];
+    for (let j = 0; j < SECT; j++) {
+      const j1 = (j + 1) % SECT;
+      idx.push(b0 + j, b1 + j1, b1 + j,
+               b0 + j, b0 + j1, b1 + j1);
+    }
+  }
 
   // angle runs +x -> +z, which is clockwise seen from +y: flip winding so
   // faces point outward (top up, walls out, bottom down)
@@ -451,9 +516,9 @@ function layoutOffsets(bases) {
   });
 }
 
-async function exportSTL() {
+async function doExport(kind) {
   if (!lastBases || !lastBases.length) return;
-  const btn = $("bases-export");
+  const btn = kind === "3mf" ? $("bases-export3mf") : $("bases-export");
   const label0 = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Rendering high-res…";
@@ -473,19 +538,79 @@ async function exportSTL() {
     alert("High-res render failed (server busy or restarted) — try again.");
     return;
   }
+  // mint the export record FIRST so its guid can be baked into the QR
+  const placeSeed0 = parseInt($("bases-seed").value) || 1;
+  const record = {
+    base_opts: { ...BASE_OPTS },
+    placement_seed: placeSeed0,
+    terrain: { seed: state.seed, config: state.config },
+  };
+  let guid = null, minted = null;
+  try {
+    const r = await fetch("/api/log_export", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(record),
+    });
+    if (r.ok) { minted = await r.json(); guid = minted.guid; }
+  } catch (e) { /* offline: export continues with placeholder QR */ }
+
   btn.textContent = "Building mesh…";
   btn.disabled = true;
   // yield one frame so the label paints before the heavy synchronous meshing
   await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
   try {
-    exportSTLGeos(hbases);
+    activeQR = guid ? qrEncode(`${QR_CANONICAL}/b/${guid}`) : null;
+    if (kind === "3mf") await export3MFGeos(hbases, record, minted);
+    else exportSTLGeos(hbases, record, guid);
   } finally {
+    activeQR = null;
     btn.disabled = false;
     btn.textContent = label0;
   }
 }
 
-function exportSTLGeos(hbases) {
+// per-geo vertex transform shared by the STL and 3MF writers; both maps
+// have determinant +1 so the outward winding is preserved
+function geoMap(off, base, i, nBases, printMode, stacked, pitch) {
+  const [ox, oz, oy = 0] = off;
+  const rowX = stacked ? 0 : (i - (nBases - 1) / 2) * pitch;
+  const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm;
+  if (printMode)
+    return (x, y, z) => [z + rowX, y + (stacked ? oy : 0), zTop - x];
+  return (x, y, z) => [x + ox, -(z + oz), y + oy];
+}
+
+async function export3MFGeos(hbases, record, minted) {
+  const geos = baseGeometries(1.0, hbases, { rings: 8192, sect: 32768 });
+  const printMode = BASE_OPTS.support_enabled;
+  const stacked = BASE_OPTS.stack_enabled;
+  const pitch = Math.max(BASE_OPTS.d_small, BASE_OPTS.d_large) + 8;
+  const guid = minted ? minted.guid : null;
+  const meshes = geos.map(({ g, off, base, i }) => ({
+    positions: g.attributes.position.array,
+    index: g.index ? g.index.array : null,
+    map: geoMap(off, base, i, hbases.length, printMode, stacked, pitch),
+  }));
+  const meta = {
+    Application: "Battlefield Heightmap Studio",
+    Title: guid ? `bases ${guid}` : "bases",
+    "hms:schema": minted ? minted.schema : 1,
+    "hms:generator_commit": minted ? minted.generator_commit : "unknown",
+    "hms:link": guid ? `${QR_CANONICAL}/b/${guid}` : "",
+    "hms:record": JSON.stringify({ ...record, guid }),
+  };
+  const chunks = await build3MF(meshes, meta);
+  geos.forEach(({ g }) => g.dispose());
+  const stem = guid ? `bases_${guid}` : `bases_seed${state.seed}`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(chunks, {
+    type: "application/vnd.ms-package.3dmanufacturing-3dmodel+xml" }));
+  a.download = `${stem}.3mf`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function exportSTLGeos(hbases, record, guid) {
   // print-true geometry: relief exaggeration forced to 1x
   const geos = baseGeometries(1.0, hbases, { rings: 8192, sect: 32768 });
   const indexOf = (g) => g.index ? g.index.array
@@ -499,7 +624,7 @@ function exportSTLGeos(hbases) {
   // every slicer; must not start with "solid"). Full params go in the
   // .params.json sidecar + the server-side exports.jsonl log.
   const placeSeed = parseInt($("bases-seed").value) || 1;
-  const hdr = (`HMS1 tseed=${state.seed} place=${placeSeed} ` +
+  const hdr = (`HMS1 ${guid ? `id=${guid} ` : ""}tseed=${state.seed} place=${placeSeed} ` +
     `ppm=${BASE_OPTS.export_px_per_mm} n=${hbases.length} ` +
     `H=${BASE_OPTS.base_height} taper=${BASE_OPTS.taper_deg} ` +
     `pins=${BASE_OPTS.pins_enabled
@@ -558,30 +683,22 @@ function exportSTLGeos(hbases) {
     g.dispose();
   });
 
-  const stem = `bases_seed${state.seed}_place${placeSeed}`;
+  const stem = guid ? `bases_${guid}` : `bases_seed${state.seed}_place${placeSeed}`;
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([buf], { type: "model/stl" }));
   a.download = `${stem}.stl`;
   a.click();
   URL.revokeObjectURL(a.href);
 
-  // full reproducible record: sidecar next to the STL + server-side log
-  const record = {
-    file: `${stem}.stl`, tris,
-    base_opts: { ...BASE_OPTS },
-    placement_seed: placeSeed,
-    terrain: { seed: state.seed, config: state.config },
-  };
+  // sidecar next to the STL (server already holds the same record by guid)
+  const side = { ...record, guid, tris, file: `${stem}.stl`,
+                 link: guid ? `${QR_CANONICAL}/b/${guid}` : null };
   const j = document.createElement("a");
   j.href = URL.createObjectURL(new Blob(
-    [JSON.stringify(record, null, 1)], { type: "application/json" }));
+    [JSON.stringify(side, null, 1)], { type: "application/json" }));
   j.download = `${stem}.params.json`;
   j.click();
   URL.revokeObjectURL(j.href);
-  fetch("/api/log_export", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(record),
-  }).catch(() => {});
 }
 
 async function refreshBasesPresets() {
@@ -685,6 +802,16 @@ function initBases() {
   const expHead = document.createElement("h3");
   expHead.textContent = "STL export";
   wrap.appendChild(expHead);
+  addToggle(wrap, "qr_enabled", "QR code on bottom (links to this setup)");
+  const qrNote = document.createElement("div");
+  qrNote.className = "row";
+  qrNote.style.fontSize = "11px";
+  qrNote.style.opacity = "0.75";
+  qrNote.textContent =
+    "Debossed 45°-chamfered modules, 0.25 mm deep — prints supportless; " +
+    "add a contrasting wash to scan. Viewer shows a placeholder; the real " +
+    "per-export link is baked in at download time.";
+  wrap.appendChild(qrNote);
   const expNote = document.createElement("div");
   expNote.className = "row";
   expNote.style.fontSize = "11px";
@@ -718,7 +845,8 @@ function initBases() {
   });
   $("bases-seed").addEventListener("change", fetchBases);
   $("bases-generate").addEventListener("click", fetchBases);
-  $("bases-export").addEventListener("click", exportSTL);
+  $("bases-export").addEventListener("click", () => doExport("stl"));
+  $("bases-export3mf").addEventListener("click", () => doExport("3mf"));
 
   refreshBasesPresets();
   $("bases-preset-save").addEventListener("click", async () => {

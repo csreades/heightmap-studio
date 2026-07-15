@@ -235,21 +235,112 @@ def post_bases(body: BasesIn):
 
 
 # ------------------------------------------------------------------ export log
+#
+# Every export gets a guid + versioned record (exports/<guid>.json and a
+# line in exports.jsonl). The record pins schema version AND the generator
+# git commit: determinism only holds for the same code, so a record is only
+# exactly reproducible on the commit that produced it. QR codes on base
+# bottoms encode <host>/b/<guid>, which stays a stable, version-free route;
+# all versioning lives in the record itself.
 
+EXPORT_SCHEMA = 1
 EXPORT_LOG = os.path.join(ROOT, "exports.jsonl")
+EXPORTS_DIR = os.path.join(ROOT, "exports")
 _export_log_lock = threading.Lock()
+
+
+def _git_commit() -> str:
+    try:
+        with open(os.path.join(ROOT, ".git", "HEAD")) as f:
+            head = f.read().strip()
+        if head.startswith("ref: "):
+            with open(os.path.join(ROOT, ".git", head[5:])) as f:
+                return f.read().strip()[:12]
+        return head[:12]
+    except OSError:
+        return "unknown"
+
+
+APP_COMMIT = _git_commit()
+_GUID_RE = re.compile(r"^[0-9a-f]{12}$")
 
 
 @app.post("/api/log_export")
 def log_export(body: dict):
-    """Append one JSON line per STL export: full base options, seeds and
-    terrain config, so any past export can be reproduced exactly."""
-    entry = {"ts": datetime.datetime.now(datetime.timezone.utc)
+    """Store one versioned record per export (full base options, seeds,
+    terrain config) under a fresh guid; returns the guid so the client can
+    bake <host>/b/<guid> into the exported geometry as a QR code."""
+    import secrets
+    guid = secrets.token_hex(6)   # 12 hex chars -> QR stays at version 3
+    entry = {"schema": EXPORT_SCHEMA, "guid": guid,
+             "generator_commit": APP_COMMIT,
+             "ts": datetime.datetime.now(datetime.timezone.utc)
                    .isoformat(timespec="seconds"), **body}
+    os.makedirs(EXPORTS_DIR, exist_ok=True)
     with _export_log_lock:
+        with open(os.path.join(EXPORTS_DIR, f"{guid}.json"), "w") as f:
+            json.dump(entry, f, indent=1)
         with open(EXPORT_LOG, "a") as f:
             f.write(json.dumps(entry, separators=(",", ":")) + "\n")
-    return {"ok": True}
+    return {"ok": True, "guid": guid, "schema": EXPORT_SCHEMA,
+            "generator_commit": APP_COMMIT}
+
+
+def _load_export(guid: str) -> dict:
+    if not _GUID_RE.match(guid):
+        raise HTTPException(400, "bad guid")
+    path = os.path.join(EXPORTS_DIR, f"{guid}.json")
+    if not os.path.isfile(path):
+        raise HTTPException(404, "no such export")
+    with open(path) as f:
+        return json.load(f)
+
+
+@app.get("/api/exports/{guid}")
+def get_export(guid: str):
+    rec = _load_export(guid)
+    rec["current_generator_commit"] = APP_COMMIT
+    rec["reproducible_exactly"] = rec.get("generator_commit") == APP_COMMIT
+    return rec
+
+
+@app.get("/b/{guid}")
+def export_page(guid: str):
+    """The page a printed base's QR code lands on: the complete setup that
+    produced it, plus a link to restore it live into the studio."""
+    rec = _load_export(guid)
+    bo = rec.get("base_opts", {})
+    same = rec.get("generator_commit") == APP_COMMIT
+    rows = "".join(
+        f"<tr><td>{k}</td><td>{json.dumps(bo[k])}</td></tr>"
+        for k in sorted(bo))
+    warn = ("" if same else
+            f"<p class='warn'>⚠ generated on commit <code>"
+            f"{rec.get('generator_commit')}</code>; server now runs <code>"
+            f"{APP_COMMIT}</code> — terrain may differ for the same seed.</p>")
+    html = f"""<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>base {guid}</title>
+<style>body{{font-family:system-ui,sans-serif;background:#181c22;color:#dde;
+margin:0 auto;max-width:640px;padding:24px}}
+a.btn{{display:inline-block;background:#3b82d0;color:#fff;padding:10px 18px;
+border-radius:8px;text-decoration:none;margin:12px 0}}
+table{{border-collapse:collapse;width:100%;font-size:14px}}
+td{{border-bottom:1px solid #333;padding:4px 8px}}
+td:first-child{{opacity:.7}} .warn{{color:#e0a030}}
+code{{background:#242a33;padding:1px 5px;border-radius:4px}}
+pre{{background:#12151a;padding:12px;border-radius:8px;overflow-x:auto;
+font-size:12px}}</style>
+<h2>Printed base — export <code>{guid}</code></h2>
+<p>{rec.get("ts","")} · schema v{rec.get("schema","?")} · generator
+<code>{rec.get("generator_commit","?")}</code> · terrain seed
+<code>{rec.get("terrain",{}).get("seed","?")}</code> · placement seed
+<code>{rec.get("placement_seed","?")}</code></p>
+{warn}
+<a class="btn" href="/?restore={guid}">Open this setup in the studio</a>
+<h3>Base options</h3><table>{rows}</table>
+<h3>Full record</h3><pre>{json.dumps(rec, indent=1)}</pre>"""
+    return Response(content=html, media_type="text/html")
 
 
 # ------------------------------------------------------------------ bases presets

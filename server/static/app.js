@@ -683,6 +683,43 @@ async function init() {
   state.config = data.config;
   state.seed = data.seed;
   state.key = data.key;
+
+  // ?restore=<guid>: load a full export record (terrain + base options) —
+  // the landing flow for QR codes printed on base bottoms
+  const guid = new URLSearchParams(location.search).get("restore");
+  if (guid && /^[0-9a-f]{12}$/.test(guid)) {
+    try {
+      const rec = await (await fetch(`/api/exports/${guid}`)).json();
+      if (rec.terrain) {
+        // merge over defaults so a partial/hand-edited record can't leave
+        // holes in the config the UI expects to be fully populated
+        const merge = (base, over) => {
+          for (const k of Object.keys(over || {})) {
+            if (over[k] && typeof over[k] === "object" && !Array.isArray(over[k])
+                && base[k] && typeof base[k] === "object") merge(base[k], over[k]);
+            else base[k] = over[k];
+          }
+          return base;
+        };
+        state.config = merge(data.config, rec.terrain.config);
+        state.seed = rec.terrain.seed;
+        await pushConfig();
+        if (rec.base_opts && typeof BASE_OPTS !== "undefined") {
+          Object.assign(BASE_OPTS, rec.base_opts);
+          $("bases-seed").value = rec.placement_seed ?? 1;
+          if (typeof syncBaseControls === "function") syncBaseControls();
+        }
+        if (!rec.reproducible_exactly) {
+          alert(`Restored export ${guid}, but it was generated on commit ` +
+            `${rec.generator_commit} and the server now runs ` +
+            `${rec.current_generator_commit} — terrain may differ ` +
+            `for the same seed.`);
+        }
+      }
+    } catch (e) {
+      console.error("restore failed:", e);
+    }
+  }
   $("seed").value = state.seed;
   buildControls();
   buildStampControls();

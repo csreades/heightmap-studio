@@ -140,6 +140,34 @@ Base geometry (defaults tuned for Legions Imperialis):
   units, Z-up, watertight shells, relief at true 1× regardless of the view
   exaggeration.
 
+### Traceability: QR on every base + versioned export records
+
+Every export mints a **guid** and stores a versioned record server-side
+(schema version, **generator git commit**, timestamp, complete base
+options, seeds and terrain config). Each base gets a **QR code debossed
+into its bottom face** — 45°-chamfered 0.25 mm recesses, printable
+supportless in any orientation; a contrasting wash makes it scan —
+linking to `/b/<guid>`: a page showing the complete setup that produced
+that physical base, with an **"Open in the studio"** button that restores
+the whole thing live (`/?restore=<guid>`). If the generator has changed
+since the export, the page and the restore flow warn that the same seed
+may no longer produce identical terrain.
+
+The record travels four ways: the QR link, the STL's 80-byte header
+(compact summary), a `.params.json` sidecar downloaded next to the STL,
+and `exports.jsonl` on the server. The QR encoder is vendored (no CDN),
+byte-mode v1–3 ECC-M, verified matrix-for-matrix against the reference
+python implementation.
+
+### Export formats
+
+- **STL** — binary, universal; ~50 bytes/triangle.
+- **3MF** — zip-compressed, indexed mesh: **~4–5× smaller than STL** for
+  the same geometry (measured: a 100 MB STL → 21.5 MB 3MF), with the full
+  export record embedded as `<metadata>`. Written by a dependency-free
+  streaming writer (native `CompressionStream`), so even multi-million
+  triangle exports don't hold giant buffers.
+
 ### High-res export
 
 Viewer quality and download quality are independent: the on-screen mesh
