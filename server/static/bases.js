@@ -419,7 +419,13 @@ function buildSupportGeometries(base) {
   // support_base_mm). Centered on the disc's mid-thickness (base_height/2),
   // not the thin tab, so on the plate it sits symmetrically under the
   // on-edge disc instead of sticking out one side.
-  const raftH = 2.0;
+  //
+  // Clearance guard: the disc rim sits S (support height) off the plate
+  // and the raft rises raftH, so their gap is S - raftH. Only the thin
+  // snap-off tab may bridge them — keep >= 0.2 mm of air so the raft can
+  // never fuse to the base, shrinking the raft if the support is short.
+  const RAFT_CLEAR = 0.2;
+  const raftH = Math.max(0.6, Math.min(2.0, S - RAFT_CLEAR));
   // ...but never so high that it loses contact with the tab (thin rafts):
   // keep the raft's lower face at least 0.1 mm into the tab's thickness.
   const cy = Math.min(BASE_OPTS.base_height / 2, tf - 0.1 + raftT / 2);
