@@ -12,6 +12,7 @@ Usage:
 """
 import argparse
 import glob
+import html
 import json
 import os
 import sys
@@ -60,6 +61,7 @@ def write_index():
         if name == "index.html":
             continue
         mb = os.path.getsize(p) / 1e6
+        name = html.escape(name, quote=True)
         rows.append(f'<li><a href="/exports_files/{name}" download>{name}</a>'
                     f' <small>({mb:.0f} MB)</small></li>')
     html = ("<!doctype html><meta charset=utf-8><title>re-exports</title>"

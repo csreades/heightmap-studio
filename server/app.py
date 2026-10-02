@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import datetime
 import glob
+from html import escape as _esc
 import io
 import json
 import os
@@ -21,7 +22,7 @@ import threading
 from collections import OrderedDict
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -279,17 +280,35 @@ APP_COMMIT = _git_commit()
 _GUID_RE = re.compile(r"^[0-9a-f]{12}$")
 
 
+MAX_RECORD_BYTES = 256 * 1024      # a real record is ~5 KB
+_SERVER_FIELDS = {"schema", "guid", "generator_commit", "ts",
+                  "current_generator_commit", "reproducible_exactly"}
+
+
 @app.post("/api/log_export")
-def log_export(body: dict):
+async def log_export(request: Request):
     """Store one versioned record per export (full base options, seeds,
     terrain config) under a fresh guid; returns the guid so the client can
     bake <host>/b/<guid> into the exported geometry as a QR code."""
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > MAX_RECORD_BYTES:
+            raise HTTPException(413, "export record too large")
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise HTTPException(400, "export record must be JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "export record must be a JSON object")
     import secrets
     guid = secrets.token_hex(6)   # 12 hex chars -> QR stays at version 3
+    # server-owned fields can't be supplied (or overridden) by the client
     entry = {"schema": EXPORT_SCHEMA, "guid": guid,
              "generator_commit": APP_COMMIT,
              "ts": datetime.datetime.now(datetime.timezone.utc)
-                   .isoformat(timespec="seconds"), **body}
+                   .isoformat(timespec="seconds")}
+    entry.update((k, v) for k, v in body.items() if k not in _SERVER_FIELDS)
     os.makedirs(EXPORTS_DIR, exist_ok=True)
     with _export_log_lock:
         with open(os.path.join(EXPORTS_DIR, f"{guid}.json"), "w") as f:
@@ -321,20 +340,26 @@ def get_export(guid: str):
 @app.get("/b/{guid}")
 def export_page(guid: str):
     """The page a printed base's QR code lands on: the complete setup that
-    produced it, plus a link to restore it live into the studio."""
+    produced it, plus a link to restore it live into the studio. Records
+    are client-supplied, so every value is escaped and the CSP forbids
+    script outright."""
     rec = _load_export(guid)
-    bo = rec.get("base_opts", {})
+    e = lambda v: _esc(str(v), quote=True)
+    bo = rec.get("base_opts")
+    bo = bo if isinstance(bo, dict) else {}
+    terrain = rec.get("terrain")
+    tseed = terrain.get("seed", "?") if isinstance(terrain, dict) else "?"
     same = rec.get("generator_commit") == APP_COMMIT
     rows = "".join(
-        f"<tr><td>{k}</td><td>{json.dumps(bo[k])}</td></tr>"
+        f"<tr><td>{e(k)}</td><td>{e(json.dumps(bo[k]))}</td></tr>"
         for k in sorted(bo))
     warn = ("" if same else
             f"<p class='warn'>⚠ generated on commit <code>"
-            f"{rec.get('generator_commit')}</code>; server now runs <code>"
-            f"{APP_COMMIT}</code> — terrain may differ for the same seed.</p>")
-    html = f"""<!doctype html><meta charset="utf-8">
+            f"{e(rec.get('generator_commit'))}</code>; server now runs <code>"
+            f"{e(APP_COMMIT)}</code> — terrain may differ for the same seed.</p>")
+    page = f"""<!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>base {guid}</title>
+<title>base {e(guid)}</title>
 <style>body{{font-family:system-ui,sans-serif;background:#181c22;color:#dde;
 margin:0 auto;max-width:640px;padding:24px}}
 a.btn{{display:inline-block;background:#3b82d0;color:#fff;padding:10px 18px;
@@ -345,16 +370,18 @@ td:first-child{{opacity:.7}} .warn{{color:#e0a030}}
 code{{background:#242a33;padding:1px 5px;border-radius:4px}}
 pre{{background:#12151a;padding:12px;border-radius:8px;overflow-x:auto;
 font-size:12px}}</style>
-<h2>Printed base — export <code>{guid}</code></h2>
-<p>{rec.get("ts","")} · schema v{rec.get("schema","?")} · generator
-<code>{rec.get("generator_commit","?")}</code> · terrain seed
-<code>{rec.get("terrain",{}).get("seed","?")}</code> · placement seed
-<code>{rec.get("placement_seed","?")}</code></p>
+<h2>Printed base — export <code>{e(guid)}</code></h2>
+<p>{e(rec.get("ts", ""))} · schema v{e(rec.get("schema", "?"))} · generator
+<code>{e(rec.get("generator_commit", "?"))}</code> · terrain seed
+<code>{e(tseed)}</code> · placement seed
+<code>{e(rec.get("placement_seed", "?"))}</code></p>
 {warn}
-<a class="btn" href="/?restore={guid}">Open this setup in the studio</a>
+<a class="btn" href="/?restore={e(guid)}">Open this setup in the studio</a>
 <h3>Base options</h3><table>{rows}</table>
-<h3>Full record</h3><pre>{json.dumps(rec, indent=1)}</pre>"""
-    return Response(content=html, media_type="text/html")
+<h3>Full record</h3><pre>{e(json.dumps(rec, indent=1))}</pre>"""
+    return Response(content=page, media_type="text/html", headers={
+        "Content-Security-Policy":
+            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'"})
 
 
 # ------------------------------------------------------------------ bases presets
