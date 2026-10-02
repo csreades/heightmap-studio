@@ -13,6 +13,8 @@ const BASE_OPTS = {
   qr_enabled: true, qr_depth_mm: 0.25,   // traceability QR debossed in the bottom
   support_enabled: false, support_height_mm: 4.0,
   support_thickness_mm: 0.4, support_raft_mm: 2.0,
+  support_perf: true,                     // perforated breakaway (teeth)
+  perf_pitch_mm: 2.5, perf_contact_mm: 0.5, perf_gap_mm: 0.4,
   support_base_mm: 40.0,  // clamps to disc width -> sides go straight down
 };
 // [key, label, min, max, step, unit, refetch?]
@@ -34,9 +36,14 @@ const PIN_PARAMS = [
   ["pin_ring_frac", "Ring radius", 0.1, 0.95, 0.01, "×R"],
   ["pin_noise", "Position noise", 0, 1, 0.02, ""],   // 1 = up to 1 mm XY error
 ];
+const PERF_PARAMS = [
+  ["perf_pitch_mm", "Contact pitch", 1.2, 6, 0.1, "mm"],    // along the rim
+  ["perf_contact_mm", "Contact width", 0.2, 1.5, 0.05, "mm"],
+  ["perf_gap_mm", "Breakaway gap", 0.2, 1, 0.05, "mm"],
+];
 const SUPPORT_PARAMS = [
   ["support_height_mm", "Height", 2, 12, 0.5, "mm"],
-  ["support_thickness_mm", "Thickness", 0.4, 2.5, 0.05, "mm"],
+  ["support_thickness_mm", "Thickness", 0.3, 2.5, 0.05, "mm"],
   ["support_base_mm", "Base size", 2, 40, 0.5, "mm"],
   ["support_raft_mm", "Raft thickness", 0.8, 4, 0.1, "mm"],
 ];
@@ -368,39 +375,93 @@ function buildBaseGeometry(base, baseIndex, exOverride, caps, weld) {
   return g;
 }
 
+function insidePoly(poly, v) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > v.y) !== (b.y > v.y)
+        && v.x < ((b.x - a.x) * (v.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
 function buildSupportGeometries(base) {
   // Thin tab flush with the base's bottom face, coming off the rim
   // sideways (+x) as viewed here; parts print rotated 90° (disc on edge,
-  // tab down). The tab's inner edge hugs the rim over a full 180° (a
-  // crescent with its weld line just inside the rim -- maximum edge
-  // support, still snaps off), then sweeps to a straight line at the
-  // plate. A thicker raft box sits on the plate for adhesion.
+  // tab down). The tab hugs a full 180° of the rim, then sweeps to a
+  // straight line at the plate. A thicker raft box sits on the plate.
+  //
+  // Interface to the disc, two modes:
+  //  - solid (support_perf off): the inner arc sits 0.5 mm inside the
+  //    rim -- one continuous weld of tf x half the circumference
+  //    (~16 mm^2 on a 25 mm base). Strong, but a long seam to cut.
+  //  - perforated: the tab stops perf_gap_mm short of the rim and reaches
+  //    it only through a row of teeth, each necking down at 45° to a
+  //    perf_contact_mm-wide contact at the rim, so it snaps there like a
+  //    stamp perforation. A tooth always sits at angle 0 -- the rim's
+  //    lowest point in print orientation, i.e. the disc's first layer,
+  //    which must never start as an unsupported island.
   const Rb = base.diameter / 2;
   const tf = BASE_OPTS.support_thickness_mm;   // plate thickness (local y)
   const S = BASE_OPTS.support_height_mm;       // rim -> build plate distance
   const L = Math.min(BASE_OPTS.support_base_mm, 2 * Rb) / 2;
-  const Ri = Rb - 0.5;                         // weld line inside the rim
+  const perf = !!BASE_OPTS.support_perf;
+  const gap = BASE_OPTS.perf_gap_mm;
+  const Ri = perf ? Rb + gap : Rb - 0.5;       // tab inner edge
+  const cz = perf ? Ri + 1.05 : Rb + 0.55;     // bezier control, 1.05 past Ri
   const xB = Rb + S;
 
   // outline sampled manually (no duplicate seam points -> clean mesh):
-  // 180° inner arc just inside the rim, bezier out to the bottom line,
-  // across the line, bezier back up to the arc start
-  const pts = [];
+  // 180° inner edge, bezier out to the bottom line, across the line,
+  // bezier back up to the edge start
   const NA = 60, NB = 26;
-  for (let k = 0; k <= NA; k++) {
-    const th = Math.PI / 2 - (k / NA) * Math.PI;
-    pts.push(new THREE.Vector2(Ri * Math.cos(th), Ri * Math.sin(th)));
-  }
+  const P = (r, a) => new THREE.Vector2(r * Math.cos(a), r * Math.sin(a));
   const quad = (x0, y0, cx, cy, x1, y1, t) => new THREE.Vector2(
     (1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x1,
     (1 - t) * (1 - t) * y0 + 2 * (1 - t) * t * cy + t * t * y1);
+  const outer = [];
   for (let k = 1; k <= NB; k++) {   // (0,-Ri) -> (xB,-L), bulging past rim
-    pts.push(quad(0, -Ri, Rb * 0.88, -(Rb + 0.55), xB, -L, k / NB));
+    outer.push(quad(0, -Ri, Rb * 0.88, -cz, xB, -L, k / NB));
   }
-  pts.push(new THREE.Vector2(xB, L));  // across the bottom line
+  outer.push(new THREE.Vector2(xB, L));  // across the bottom line
   for (let k = 1; k < NB; k++) {    // (xB,+L) -> (0,+Ri), mirrored; stops
-    pts.push(quad(xB, L, Rb * 0.88, Rb + 0.55, 0, Ri, k / NB));
-  }                                 // short of the arc start (auto-close)
+    outer.push(quad(xB, L, Rb * 0.88, cz, 0, Ri, k / NB));
+  }                                 // short of the edge start (auto-close)
+
+  const arc = (a0, a1) => {         // inner edge from a0 down to a1, ends incl.
+    const n = Math.max(1, Math.ceil(((a0 - a1) / Math.PI) * NA));
+    const out = [];
+    for (let k = 0; k <= n; k++) out.push(P(Ri, a0 - (k / n) * (a0 - a1)));
+    return out;
+  };
+  const edge = [];
+  if (!perf) {
+    for (let k = 0; k <= NA; k++) edge.push(P(Ri, Math.PI / 2 - (k / NA) * Math.PI));
+  } else {
+    const wt = BASE_OPTS.perf_contact_mm;
+    const wb = wt + 2 * gap;                   // 45° neck flanks
+    const pitch = Math.max(BASE_OPTS.perf_pitch_mm, wb + 0.3);
+    const Rc = Rb - 0.3;                       // tips overlap into the disc
+    const dA = pitch / Rb;                     // spacing measured along the rim
+    const aB = wb / 2 / Ri;                    // tooth half-angle at its root
+    // only keep teeth rooted in solid tab: it thins to nothing toward ±90°
+    // where the inner edge meets the outer bezier
+    const plain = [...arc(Math.PI / 2, -Math.PI / 2), ...outer];
+    const root = Ri + 0.6;
+    const kMax = Math.floor(Math.PI / 2 / dA);
+    let cur = Math.PI / 2;
+    for (let k = kMax; k >= -kMax; k--) {
+      const a = k * dA;
+      if (a + aB >= Math.PI / 2 || a - aB <= -Math.PI / 2) continue;
+      if (!insidePoly(plain, P(root, a + aB)) || !insidePoly(plain, P(root, a - aB))) continue;
+      edge.push(...arc(cur, a + aB));
+      edge.push(P(Rb, a + wt / 2 / Rb), P(Rc, a + wt / 2 / Rc),
+                P(Rc, a - wt / 2 / Rc), P(Rb, a - wt / 2 / Rb));
+      cur = a - aB;
+    }
+    edge.push(...arc(cur, -Math.PI / 2));
+  }
+  const pts = [...edge, ...outer];
   const tab = new THREE.ExtrudeGeometry(new THREE.Shape(pts), {
     depth: tf, bevelEnabled: false,
   });
@@ -424,7 +485,9 @@ function buildSupportGeometries(base) {
   // and the raft rises raftH, so their gap is S - raftH. Only the thin
   // snap-off tab may bridge them — keep >= 0.2 mm of air so the raft can
   // never fuse to the base, shrinking the raft if the support is short.
-  const RAFT_CLEAR = 0.2;
+  // With perforation the raft also stays out of the breakaway gap, so it
+  // can never swallow a tooth's neck.
+  const RAFT_CLEAR = perf ? Math.max(0.2, gap) : 0.2;
   const raftH = Math.max(0.6, Math.min(2.0, S - RAFT_CLEAR));
   // ...but never so high that it loses contact with the tab (thin rafts):
   // keep the raft's lower face at least 0.1 mm into the tab's thickness.
@@ -841,6 +904,8 @@ function initBases() {
   wrap.appendChild(supHead);
   addToggle(wrap, "support_enabled", "Include support");
   addBaseSliders(wrap, SUPPORT_PARAMS);
+  addToggle(wrap, "support_perf", "Perforated breakaway (contact teeth)");
+  addBaseSliders(wrap, PERF_PARAMS);
 
   // stack-for-print: one upright, center-aligned column with controllable
   // clear spacing; overrides the on-edge support layout when enabled
