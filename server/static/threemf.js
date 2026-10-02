@@ -23,61 +23,83 @@
   }
 
   const enc = new TextEncoder();
-  const le16 = (v) => [v & 0xff, (v >> 8) & 0xff];
-  const le32 = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
-
   // ---- minimal ZIP writer -------------------------------------------------
-  // Entries are written sequentially; the model entry streams through
-  // deflate-raw. Uses data descriptors (flag bit 3) so sizes/CRC follow the
-  // payload. Central directory written at the end.
+  // Each entry is fully compressed before its header is written, so sizes
+  // and CRC go straight into the local header (no data descriptors).
+  // Entries or offsets past 4 GiB switch that record to ZIP64 -- a large
+  // high-res model entry would otherwise wrap its 32-bit sizes and produce
+  // a corrupt file. Small archives stay plain zip for maximum
+  // compatibility.
+  const U32 = 0xffffffff;
+  const setU64 = (dv, o, v) => {
+    dv.setUint32(o, v % 4294967296, true);
+    dv.setUint32(o + 4, Math.floor(v / 4294967296), true);
+  };
+
   class ZipWriter {
-    constructor() { this.chunks = []; this.offset = 0; this.central = []; }
+    constructor() { this.chunks = []; this.offset = 0; this.central = []; this.zip64 = false; }
     _push(u8) { this.chunks.push(u8); this.offset += u8.length; }
 
-    _localHeader(name, method) {
+    _entry(name, method, crc, csize, usize, data) {
       const n = enc.encode(name);
-      const h = new Uint8Array(30 + n.length);
-      h.set([0x50, 0x4b, 0x03, 0x04]);
-      h.set(le16(20), 4);            // version
-      h.set(le16(0x08), 6);          // flags: data descriptor
-      h.set(le16(method), 8);        // 0 stored / 8 deflate
-      h.set(le16(n.length), 26);
+      const off = this.offset;
+      const big = csize >= U32 || usize >= U32;
+      const bigOff = off >= U32;
+      if (big || bigOff) this.zip64 = true;
+      const ver = big || bigOff ? 45 : 20;
+
+      const lx = big ? 20 : 0;        // local zip64 extra: both sizes
+      const h = new Uint8Array(30 + n.length + lx);
+      const hv = new DataView(h.buffer);
+      hv.setUint32(0, 0x04034b50, true);
+      hv.setUint16(4, ver, true);
+      hv.setUint16(8, method, true);
+      hv.setUint32(14, crc, true);
+      hv.setUint32(18, big ? U32 : csize, true);
+      hv.setUint32(22, big ? U32 : usize, true);
+      hv.setUint16(26, n.length, true);
+      hv.setUint16(28, lx, true);
       h.set(n, 30);
-      return h;
-    }
-    _descriptor(crc, csize, usize) {
-      const d = new Uint8Array(16);
-      d.set([0x50, 0x4b, 0x07, 0x08]);
-      d.set(le32(crc), 4); d.set(le32(csize), 8); d.set(le32(usize), 12);
-      return d;
-    }
-    _centralRecord(name, method, crc, csize, usize, off) {
-      const n = enc.encode(name);
-      const c = new Uint8Array(46 + n.length);
-      c.set([0x50, 0x4b, 0x01, 0x02]);
-      c.set(le16(20), 4); c.set(le16(20), 6);
-      c.set(le16(0x08), 8); c.set(le16(method), 10);
-      c.set(le32(crc), 16); c.set(le32(csize), 20); c.set(le32(usize), 24);
-      c.set(le16(n.length), 28);
-      c.set(le32(off), 42);
+      if (big) {
+        hv.setUint16(30 + n.length, 0x0001, true);
+        hv.setUint16(32 + n.length, 16, true);
+        setU64(hv, 34 + n.length, usize);
+        setU64(hv, 42 + n.length, csize);
+      }
+      this._push(h);
+      for (const c of data) this._push(c);
+
+      // central record: zip64 extra carries only the fields set to 0xffffffff
+      const cx = (big ? 16 : 0) + (bigOff ? 8 : 0);
+      const c = new Uint8Array(46 + n.length + (cx ? 4 + cx : 0));
+      const cv = new DataView(c.buffer);
+      cv.setUint32(0, 0x02014b50, true);
+      cv.setUint16(4, ver, true);
+      cv.setUint16(6, ver, true);
+      cv.setUint16(10, method, true);
+      cv.setUint32(16, crc, true);
+      cv.setUint32(20, big ? U32 : csize, true);
+      cv.setUint32(24, big ? U32 : usize, true);
+      cv.setUint16(28, n.length, true);
+      cv.setUint16(30, cx ? 4 + cx : 0, true);
+      cv.setUint32(42, bigOff ? U32 : off, true);
       c.set(n, 46);
-      return c;
+      if (cx) {
+        let o = 46 + n.length;
+        cv.setUint16(o, 0x0001, true); cv.setUint16(o + 2, cx, true); o += 4;
+        if (big) { setU64(cv, o, usize); setU64(cv, o + 8, csize); o += 16; }
+        if (bigOff) setU64(cv, o, off);
+      }
+      this.central.push(c);
     }
 
     addStored(name, text) {
       const data = enc.encode(text);
-      const off = this.offset;
-      this._push(this._localHeader(name, 0));
-      this._push(data);
-      const crc = crcUpdate(0, data);
-      this._push(this._descriptor(crc, data.length, data.length));
-      this.central.push(this._centralRecord(name, 0, crc, data.length, data.length, off));
+      this._entry(name, 0, crcUpdate(0, data), data.length, data.length, [data]);
     }
 
     // add one entry from an async generator of text chunks, deflated
     async addDeflated(name, chunkGen) {
-      const off = this.offset;
-      this._push(this._localHeader(name, 8));
       const cs = new CompressionStream("deflate-raw");
       const writer = cs.writable.getWriter();
       const compressed = [];
@@ -98,9 +120,7 @@
       }
       await writer.close();
       await pump;
-      for (const c of compressed) this._push(c);
-      this._push(this._descriptor(crc, csize, usize));
-      this.central.push(this._centralRecord(name, 8, crc, csize, usize, off));
+      this._entry(name, 8, crc, csize, usize, compressed);
       return { usize, csize };
     }
 
@@ -108,11 +128,32 @@
       const cdOff = this.offset;
       let cdSize = 0;
       for (const c of this.central) { this._push(c); cdSize += c.length; }
+      const count = this.central.length;
+      const z64 = this.zip64 || cdOff >= U32 || cdSize >= U32 || count >= 0xffff;
+      if (z64) {
+        const recOff = this.offset;
+        const r = new Uint8Array(56);
+        const rv = new DataView(r.buffer);
+        rv.setUint32(0, 0x06064b50, true);
+        setU64(rv, 4, 44);                     // size of the rest of the record
+        rv.setUint16(12, 45, true); rv.setUint16(14, 45, true);
+        setU64(rv, 24, count); setU64(rv, 32, count);
+        setU64(rv, 40, cdSize); setU64(rv, 48, cdOff);
+        this._push(r);
+        const l = new Uint8Array(20);
+        const lv = new DataView(l.buffer);
+        lv.setUint32(0, 0x07064b50, true);
+        setU64(lv, 8, recOff);
+        lv.setUint32(16, 1, true);             // total number of disks
+        this._push(l);
+      }
       const e = new Uint8Array(22);
-      e.set([0x50, 0x4b, 0x05, 0x06]);
-      e.set(le16(this.central.length), 8);
-      e.set(le16(this.central.length), 10);
-      e.set(le32(cdSize), 12); e.set(le32(cdOff), 16);
+      const ev = new DataView(e.buffer);
+      ev.setUint32(0, 0x06054b50, true);
+      ev.setUint16(8, Math.min(count, 0xffff), true);
+      ev.setUint16(10, Math.min(count, 0xffff), true);
+      ev.setUint32(12, cdSize >= U32 ? U32 : cdSize, true);
+      ev.setUint32(16, cdOff >= U32 ? U32 : cdOff, true);
       this._push(e);
       return this.chunks;
     }
@@ -182,5 +223,6 @@
   }
 
   root.build3MF = build3MF;
-  root._zipCrc32 = (bytes) => crcUpdate(0, bytes);   // test hook
+  root._zipCrc32 = (bytes) => crcUpdate(0, bytes);   // test hooks
+  root._ZipWriter = ZipWriter;
 })(typeof self !== "undefined" ? self : globalThis);

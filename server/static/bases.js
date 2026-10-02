@@ -594,8 +594,48 @@ function layoutOffsets(bases) {
   });
 }
 
+// Exact triangle count of an export (mirrors buildBaseGeometry's ring /
+// sector / QR-bottom formulas) and rough peak browser memory per format:
+// retained geometry ~24 B/tri; STL adds its 50 B/tri buffer plus the Blob
+// copy; 3MF holds only ~9.5 B/tri of compressed output (plus its copy).
+// The largest base's transient build arrays add ~36 B/tri on top.
+const EXPORT_MEM_BUDGET = 3e9;
+function exportEstimate(bases, ppm) {
+  let tris = 0, maxBase = 0;
+  for (const b of bases || []) {
+    const D = b.diameter, Rb = D / 2;
+    const rings = Math.min(Math.max(Math.round(Rb * ppm * 1.2), 32), 8192);
+    const sect = Math.min(Math.max(Math.round(Math.PI * D * ppm * 1.2), 96), 32768);
+    let t = sect + 2 * sect * (rings - 1) + 2 * sect;          // top + wall
+    if (BASE_OPTS.qr_enabled) {
+      const rq = Math.min(Rb - 0.5, 0.62 * D * 0.75);
+      const nq = Math.max(8, Math.ceil(rq / Math.max(0.06, 1 / ppm)));
+      t += sect + 2 * sect * nq;                               // QR bottom grid
+    } else {
+      t += sect;                                               // flat bottom fan
+    }
+    tris += t;
+    maxBase = Math.max(maxBase, t);
+  }
+  return {
+    tris,
+    stlBytes: 84 + 50 * tris,
+    mf3Bytes: 9.5 * tris,
+    peakStl: 124 * tris + 36 * maxBase,
+    peak3mf: 43 * tris + 36 * maxBase,
+  };
+}
+
 async function doExport(kind) {
   if (!lastBases || !lastBases.length) return;
+  const est = exportEstimate(lastBases, BASE_OPTS.export_px_per_mm);
+  const peak = kind === "3mf" ? est.peak3mf : est.peakStl;
+  if (peak > EXPORT_MEM_BUDGET && !confirm(
+      `This ${kind.toUpperCase()} export is ~${(est.tris / 1e6).toFixed(0)} M triangles ` +
+      `and needs roughly ${(peak / 1e9).toFixed(1)} GB of browser memory — ` +
+      `the tab will probably crash.\n\nLower "Download res" or export fewer bases ` +
+      `per file` + (kind === "stl" ? ` (or use Export 3MF: about a third of the memory)` : "") +
+      `.\n\nTry anyway?`)) return;
   const btn = kind === "3mf" ? $("bases-export3mf") : $("bases-export");
   const label0 = btn.textContent;
   btn.disabled = true;
@@ -948,17 +988,16 @@ function initBases() {
   updateExportEst = () => {
     const ppm = BASE_OPTS.export_px_per_mm;
     const micron = Math.round(1000 / ppm);
-    let tris = 0;
-    for (const b of (lastBases || [])) {
-      const D = b.diameter;
-      const rings = Math.min(Math.round((D / 2) * ppm * 1.2), 8192);
-      const sect = Math.min(Math.round(Math.PI * D * ppm * 1.2), 32768);
-      tris += 2 * rings * sect + 2 * sect;   // top surface + wall (approx)
-    }
-    const mb = (84 + tris * 50) / 1048576;
-    expNote.textContent = tris
-      ? `${micron} µm/px · ~${(tris / 1e6).toFixed(1)} M tris · ~${mb.toFixed(0)} MB` +
-        (mb > 400 ? "  ⚠ large — may be slow to slice" : "")
+    const e = exportEstimate(lastBases, ppm);
+    const mb = (b) => `${(b / 1048576).toFixed(0)} MB`;
+    expNote.textContent = e.tris
+      ? `${micron} µm/px · ~${(e.tris / 1e6).toFixed(1)} M tris · ` +
+        `STL ~${mb(e.stlBytes)} · 3MF ~${mb(e.mf3Bytes)}` +
+        (e.peakStl > EXPORT_MEM_BUDGET
+          ? (e.peak3mf > EXPORT_MEM_BUDGET
+            ? "  ⚠ too big for the browser — lower res or fewer bases"
+            : "  ⚠ too big as STL — use 3MF")
+          : "")
       : `${micron} µm/px`;
   };
   const expRow = sliderRow("Download res", BASE_OPTS.export_px_per_mm, 5, 50, 1,
