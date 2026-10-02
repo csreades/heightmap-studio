@@ -53,6 +53,11 @@ python3 -m venv .venv
 # open http://<host>:8000/
 ```
 
+To keep it running across reboots, `deploy/heightmap-studio.service` is
+a systemd unit for this setup (adjust the paths, then
+`cp deploy/*.service deploy/*.timer /etc/systemd/system/ &&
+systemctl daemon-reload && systemctl enable --now heightmap-studio`).
+
 CLI test render (no server needed):
 
 ```bash
@@ -118,11 +123,19 @@ Base geometry (defaults tuned for Legions Imperialis):
   polar ring (default 5 × Ø6.1 × 1.4 mm deep), with a seeded position-noise
   dial (0 = perfect ring, 1 = up to 1 mm XY error per pin).
 - **Print support** — optional thin snap-off tab (0.4 mm) flush with the
-  base's bottom face: a crescent whose weld line hugs a full 180° of the
-  rim, sweeping to a straight line on the build plate with a thicker raft
-  foot (2 mm tall × base width, centered on the disc's mid-thickness).
-  With supports on, the STL exports in print orientation — discs on edge,
-  rafts at z=0.
+  base's bottom face: a crescent hugging a full 180° of the rim, sweeping
+  to a straight line on the build plate with a thicker raft foot (2 mm
+  tall × base width, centered on the disc's mid-thickness, always ≥ 0.2 mm
+  clear of the disc). With supports on, the STL exports in print
+  orientation — discs on edge, rafts at z=0.
+  - **Perforated breakaway** (default) — instead of one continuous weld
+    along the rim (~16 mm² of resin to break on a Ø25 base), the tab stops
+    a 0.4 mm gap short of the rim and touches it only through a row of
+    teeth that neck down at 45° to 0.5 mm contacts every 2.5 mm, so it
+    snaps off like a stamp perforation (~2.6 mm² total on a Ø25). A tooth
+    always sits at the rim's lowest point in print orientation, so the
+    disc's first layer is never an unsupported island. Contact pitch,
+    width and gap are tunable; turn it off for the solid weld.
 
   ![Pin sockets and crescent print support](screenshots/m10_pins_support.png)
   ![Support tab detail — weld line hugging the rim](screenshots/m11_support_hero.png)
@@ -159,6 +172,13 @@ and `exports.jsonl` on the server. The QR encoder is vendored (no CDN),
 byte-mode v1–3 ECC-M, verified matrix-for-matrix against the reference
 python implementation.
 
+Records are what keep printed QR codes alive, so `scripts/backup_records.sh`
+mirrors them (plus saved presets) into a private git repo, committing only
+when something changed and never deleting; `deploy/` has a systemd timer
+that runs it every 15 minutes. Records are client-supplied: the server
+owns the guid / schema / commit / timestamp fields, caps record size, and
+the `/b/` page escapes everything under a script-blocking CSP.
+
 ### Export formats
 
 - **STL** — binary, universal; ~50 bytes/triangle.
@@ -166,7 +186,13 @@ python implementation.
   the same geometry (measured: a 100 MB STL → 21.5 MB 3MF), with the full
   export record embedded as `<metadata>`. Written by a dependency-free
   streaming writer (native `CompressionStream`), so even multi-million
-  triangle exports don't hold giant buffers.
+  triangle exports don't hold giant buffers; entries past 4 GiB switch to
+  ZIP64 automatically (normal-size files stay plain zip).
+
+Both are assembled in the browser, so very large exports are bounded by
+tab memory: the size readout under **Download res** is exact (it mirrors
+the mesh builder), and an export estimated to need more than ~3 GB asks
+before running. STL needs roughly 3× the memory of 3MF.
 
 ### High-res export
 
@@ -178,7 +204,7 @@ at the chosen **Download res** at export time. A live estimate shows
 | Download res | XY pitch | When to use |
 |---|---|---|
 | 20–25 px/mm | 50–40 µm | matches typical resin LCD XY pixels — full sets |
-| 40 px/mm (default) | 25 µm | maximum Z-relief fidelity — export 1–2 bases at a time |
+| 40 px/mm (default) | 25 µm | maximum Z-relief fidelity — 1–2 bases per file (3MF) |
 | 50 px/mm | 20 µm | overkill, but available |
 
 ---
