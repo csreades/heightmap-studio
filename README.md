@@ -136,6 +136,14 @@ Base geometry (defaults tuned for Legions Imperialis):
     always sits at the rim's lowest point in print orientation, so the
     disc's first layer is never an unsupported island. Contact pitch,
     width and gap are tunable; turn it off for the solid weld.
+  - **Support sweep** — one plate of 13 identical bases whose supports run
+    from sure things to likely failures, to find the best contact size in
+    a single print: a solid-weld control, then contact widths 1.0 → 0.15 mm
+    at the default 2.5 mm tooth spacing (row A) and a sparser 4 mm (row B).
+    Each base gets its own export record and QR code, and a legend (`.txt`)
+    downloads with the 3MF. Resin print time depends on height, not part
+    count, so the extra bases only cost resin; terrain resolution is capped
+    at 16 px/mm for the sweep since it doesn't affect support behaviour.
 
   ![Pin sockets and crescent print support](screenshots/m10_pins_support.png)
   ![Support tab detail — weld line hugging the rim](screenshots/m11_support_hero.png)

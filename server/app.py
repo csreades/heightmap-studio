@@ -350,6 +350,10 @@ def export_page(guid: str):
     terrain = rec.get("terrain")
     tseed = terrain.get("seed", "?") if isinstance(terrain, dict) else "?"
     same = rec.get("generator_commit") == APP_COMMIT
+    sweep = rec.get("sweep")
+    sweep_line = (f"<p>Support sweep <code>{e(sweep.get('id', '?'))}</code> · test base "
+                  f"<b>{e(sweep.get('label', '?'))}</b> of {e(sweep.get('variants', '?'))}</p>"
+                  if isinstance(sweep, dict) else "")
     rows = "".join(
         f"<tr><td>{e(k)}</td><td>{e(json.dumps(bo[k]))}</td></tr>"
         for k in sorted(bo))
@@ -375,7 +379,7 @@ font-size:12px}}</style>
 <code>{e(rec.get("generator_commit", "?"))}</code> · terrain seed
 <code>{e(tseed)}</code> · placement seed
 <code>{e(rec.get("placement_seed", "?"))}</code></p>
-{warn}
+{sweep_line}{warn}
 <a class="btn" href="/?restore={e(guid)}">Open this setup in the studio</a>
 <h3>Base options</h3><table>{rows}</table>
 <h3>Full record</h3><pre>{e(json.dumps(rec, indent=1))}</pre>"""

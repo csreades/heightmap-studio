@@ -38,7 +38,7 @@ const PIN_PARAMS = [
 ];
 const PERF_PARAMS = [
   ["perf_pitch_mm", "Contact pitch", 1.2, 6, 0.1, "mm"],    // along the rim
-  ["perf_contact_mm", "Contact width", 0.2, 1.5, 0.05, "mm"],
+  ["perf_contact_mm", "Contact width", 0.1, 1.5, 0.05, "mm"],
   ["perf_gap_mm", "Breakaway gap", 0.2, 1, 0.05, "mm"],
 ];
 const SUPPORT_PARAMS = [
@@ -110,7 +110,7 @@ function scheduleBases() {
   basesTimer = setTimeout(fetchBases, 400);
 }
 
-async function requestBases(ppm) {
+async function requestBases(ppm, overrides = {}) {
   // one base set at the given sampling resolution; used by the viewer (low
   // ppm) and, independently, by the STL export (high ppm) without touching
   // the on-screen mesh.
@@ -125,6 +125,7 @@ async function requestBases(ppm) {
       d_small: BASE_OPTS.d_small,
       d_large: BASE_OPTS.d_large,
       px_per_mm: ppm,
+      ...overrides,
     }),
   });
   if (!res.ok) return null;
@@ -435,6 +436,7 @@ function buildSupportGeometries(base) {
     return out;
   };
   const edge = [];
+  let teeth = 0;
   if (!perf) {
     for (let k = 0; k <= NA; k++) edge.push(P(Ri, Math.PI / 2 - (k / NA) * Math.PI));
   } else {
@@ -458,6 +460,7 @@ function buildSupportGeometries(base) {
       edge.push(P(Rb, a + wt / 2 / Rb), P(Rc, a + wt / 2 / Rc),
                 P(Rc, a - wt / 2 / Rc), P(Rb, a - wt / 2 / Rb));
       cur = a - aB;
+      teeth++;
     }
     edge.push(...arc(cur, -Math.PI / 2));
   }
@@ -473,6 +476,7 @@ function buildSupportGeometries(base) {
     p.setXYZ(i, sx, sz, -sy);
   }
   tab.computeVertexNormals();
+  tab.userData.teeth = teeth;
 
   const raftT = Math.max(BASE_OPTS.support_raft_mm, tf + 0.3);
   // raft: thickness raftT (slider), 2 mm tall off the plate, exactly the
@@ -730,34 +734,35 @@ function weldIndexed(positions) {
   return { positions: Float32Array.from(outPos), index };
 }
 
+// Indexed mesh + print transform for the 3MF writer. Welds soup meshes
+// (ExtrudeGeometry tab) AND small indexed ones whose faces don't share
+// vertices (BoxGeometry raft = 6 disconnected quads with 24 open edges by
+// index); the disc grids are already welded.
+function prepMesh(g, map) {
+  let positions = g.attributes.position.array;
+  let index = g.index ? g.index.array : null;
+  if (!index) {
+    ({ positions, index } = weldIndexed(positions));
+  } else if (positions.length / 3 <= 10000) {
+    const soup = new Float32Array(index.length * 3);
+    for (let k = 0; k < index.length; k++) {
+      soup[k * 3] = positions[index[k] * 3];
+      soup[k * 3 + 1] = positions[index[k] * 3 + 1];
+      soup[k * 3 + 2] = positions[index[k] * 3 + 2];
+    }
+    ({ positions, index } = weldIndexed(soup));
+  }
+  return { positions, index, map };
+}
+
 async function export3MFGeos(hbases, record, minted) {
   const geos = baseGeometries(1.0, hbases, { rings: 8192, sect: 32768 }, true);
   const printMode = BASE_OPTS.support_enabled;
   const stacked = BASE_OPTS.stack_enabled;
   const pitch = Math.max(BASE_OPTS.d_small, BASE_OPTS.d_large) + 8;
   const guid = minted ? minted.guid : null;
-  const meshes = geos.map(({ g, off, base, i }) => {
-    let positions = g.attributes.position.array;
-    let index = g.index ? g.index.array : null;
-    // weld soup meshes (ExtrudeGeometry tab) AND small indexed ones whose
-    // faces don't share vertices (BoxGeometry raft = 6 disconnected quads
-    // with 24 open edges by index); the disc grids are already welded
-    if (!index) {
-      ({ positions, index } = weldIndexed(positions));
-    } else if (positions.length / 3 <= 10000) {
-      const soup = new Float32Array(index.length * 3);
-      for (let k = 0; k < index.length; k++) {
-        soup[k * 3] = positions[index[k] * 3];
-        soup[k * 3 + 1] = positions[index[k] * 3 + 1];
-        soup[k * 3 + 2] = positions[index[k] * 3 + 2];
-      }
-      ({ positions, index } = weldIndexed(soup));
-    }
-    return {
-      positions, index,
-      map: geoMap(off, base, i, hbases.length, printMode, stacked, pitch),
-    };
-  });
+  const meshes = geos.map(({ g, off, base, i }) =>
+    prepMesh(g, geoMap(off, base, i, hbases.length, printMode, stacked, pitch)));
   const meta = {
     Application: "Battlefield Heightmap Studio",
     Title: guid ? `bases ${guid}` : "bases",
@@ -775,6 +780,153 @@ async function export3MFGeos(hbases, record, minted) {
   a.download = `${stem}.3mf`;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+// ---------------------------------------------------------------- support sweep
+//
+// One plate of identical bases (same terrain crop, same size) whose
+// supports range from sure things to likely failures, so a single print
+// shows where the contacts start to fail. Resin print time depends on
+// height, not part count, so the extra bases only cost resin. Columns
+// step the contact width down; row A uses the default tooth spacing and
+// row B a sparser one; A0 is the old solid weld as a control. Every base
+// gets its own export record, so its QR code names its exact variant.
+const SWEEP_WIDTHS = [1.0, 0.7, 0.5, 0.35, 0.25, 0.15];   // sure -> likely fail
+const SWEEP_PITCHES = [2.5, 4.0];
+
+function sweepVariants() {
+  const out = [{ label: "A0", row: 0, col: 0, perf: false }];
+  SWEEP_PITCHES.forEach((pitch, r) => SWEEP_WIDTHS.forEach((contact, c) =>
+    out.push({ label: "AB"[r] + (c + 1), row: r, col: c + 1, perf: true, contact, pitch })));
+  return out;
+}
+
+function downloadBlob(parts, type, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(parts, { type }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function sweepLegend(id, variants, base, ppm, placement) {
+  const t = BASE_OPTS.support_thickness_mm, gap = BASE_OPTS.perf_gap_mm;
+  const area = (v) => v.perf ? v.teeth * v.contact * t : (Math.PI * base.diameter / 2) * t;
+  const row = (cells) => cells.map((c, i) => String(c).padEnd([6, 12, 9, 9, 7, 11][i] || 0)).join("");
+  const lines = [
+    `Support sweep ${id}: ${variants.length} identical Ø${base.diameter} mm bases, ` +
+      `${ppm} px/mm, terrain seed ${state.seed}, placement seed ${placement}`,
+    `Support sheet ${t} mm thick, breakaway gap ${gap} mm (both fixed; only the contacts vary).`,
+    "",
+    "Plate layout: each row is a rack of discs side by side; column number",
+    "increases along the rack, row B sits beside row A along the rafts' length.",
+    "  A0     solid weld (the old design) - the control",
+    `  A1-A6  teeth every ${SWEEP_PITCHES[0]} mm, contact width ${SWEEP_WIDTHS.join(" / ")} mm`,
+    `  B1-B6  same widths, teeth every ${SWEEP_PITCHES[1]} mm (sparser)`,
+    "Left to right is sure thing -> likely failure. Every base's bottom QR",
+    "links to its exact settings; mark them with a pen as they come off.",
+    "",
+    row(["base", "support", "width", "spacing", "teeth", "contact"]) + "record",
+  ];
+  for (const v of variants) {
+    lines.push(row([
+      v.label, v.perf ? "perforated" : "solid weld",
+      v.perf ? `${v.contact} mm` : "-", v.perf ? `${v.pitch} mm` : "-",
+      v.perf ? v.teeth : "-", `${area(v).toFixed(2)} mm2`,
+    ]) + `${QR_CANONICAL}/b/${v.guid}`);
+  }
+  lines.push("",
+    "Reading it: the best setting is usually the narrowest contact that held",
+    "and still snapped off cleanly, plus one step back toward the sure end",
+    "for margin. If a whole row failed, spacing matters more than width.",
+    "After printing, check the vat film: a base that tore off mid-print can",
+    "leave cured resin stuck to it.");
+  return lines.join("\n") + "\n";
+}
+
+async function exportSupportSweep() {
+  if (!state.key) return;
+  const btn = $("bases-sweep");
+  const label0 = btn.textContent;
+  // terrain detail doesn't matter for a support test; cap it to keep the
+  // plate small (13 bases at 16 px/mm is ~17 M triangles)
+  const ppm = Math.min(BASE_OPTS.export_px_per_mm, 16);
+  const variants = sweepVariants();
+  const est = exportEstimate(variants.map(() => ({ diameter: BASE_OPTS.d_small })), ppm);
+  if (est.peak3mf > EXPORT_MEM_BUDGET && !confirm(
+      `This sweep is ~${(est.tris / 1e6).toFixed(0)} M triangles and needs roughly ` +
+      `${(est.peak3mf / 1e9).toFixed(1)} GB of browser memory. Lower "Download res" or ` +
+      `"Small Ø".\n\nTry anyway?`)) return;
+  btn.disabled = true;
+  btn.textContent = "Rendering sweep…";
+  try {
+    const bases = await requestBases(ppm, { count: 1, large_fraction: 0 });
+    if (!bases || !bases.length) throw new Error("couldn't fetch the base");
+    const base = bases[0];
+    const placement = parseInt($("bases-seed").value) || 1;
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(4)),
+      (b) => b.toString(16).padStart(2, "0")).join("");
+    for (const v of variants) {
+      v.opts = {
+        ...BASE_OPTS, count: 1, large_fraction: 0, support_enabled: true,
+        stack_enabled: false, support_perf: v.perf,
+        ...(v.perf ? { perf_contact_mm: v.contact, perf_pitch_mm: v.pitch } : {}),
+      };
+      const r = await fetch("/api/log_export", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base_opts: v.opts, placement_seed: placement,
+          terrain: { seed: state.seed, config: state.config },
+          sweep: { id, label: v.label, variants: variants.length, px_per_mm: ppm },
+        }),
+      });
+      if (!r.ok) throw new Error("couldn't store the export records");
+      v.guid = (await r.json()).guid;
+    }
+
+    btn.textContent = "Building sweep…";
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    const saved = { ...BASE_OPTS };
+    const meshes = [], built = [];
+    const colPitch = Math.ceil(BASE_OPTS.base_height + (base.max - base.mean) + 7);
+    const rowPitch = base.diameter + 10;
+    try {
+      for (const v of variants) {
+        Object.assign(BASE_OPTS, v.opts);
+        activeQR = qrEncode(`${QR_CANONICAL}/b/${v.guid}`);
+        // print orientation (disc on edge, raft on the plate), laid out on
+        // a grid: row -> along the raft length, column -> along the rack
+        const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm;
+        const X0 = v.row * rowPitch, Y0 = v.col * colPitch;
+        const map = (x, y, z) => [z + X0, y + Y0, zTop - x];
+        const disc = buildBaseGeometry(base, 0, 1.0, { rings: 8192, sect: 32768 }, true);
+        const [tab, raft] = buildSupportGeometries(base);
+        v.teeth = tab.userData.teeth;
+        for (const g of [disc, tab, raft]) { meshes.push(prepMesh(g, map)); built.push(g); }
+      }
+    } finally {
+      Object.assign(BASE_OPTS, saved);
+      activeQR = null;
+    }
+    const chunks = await build3MF(meshes, {
+      Application: "Battlefield Heightmap Studio",
+      Title: `support sweep ${id}`,
+      "hms:sweep": JSON.stringify(variants.map((v) => ({
+        label: v.label, guid: v.guid, perforated: v.perf, contact_mm: v.contact ?? null,
+        pitch_mm: v.pitch ?? null, teeth: v.teeth }))),
+    });
+    built.forEach((g) => g.dispose());
+    downloadBlob(chunks, "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+      `support_sweep_${id}.3mf`);
+    downloadBlob([sweepLegend(id, variants, base, ppm, placement)], "text/plain",
+      `support_sweep_${id}.txt`);
+  } catch (e) {
+    console.error("support sweep failed:", e);
+    alert(`Support sweep failed: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label0;
+  }
 }
 
 function exportSTLGeos(hbases, record, guid) {
@@ -1015,6 +1167,7 @@ function initBases() {
   $("bases-generate").addEventListener("click", fetchBases);
   $("bases-export").addEventListener("click", () => doExport("stl"));
   $("bases-export3mf").addEventListener("click", () => doExport("3mf"));
+  $("bases-sweep").addEventListener("click", exportSupportSweep);
 
   refreshBasesPresets();
   $("bases-preset-save").addEventListener("click", async () => {
