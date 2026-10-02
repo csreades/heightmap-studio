@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up heightmap-studio export records every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

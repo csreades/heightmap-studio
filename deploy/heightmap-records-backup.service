@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up heightmap-studio export records to a private git repo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+ExecStart=/root/repos/limp-bases/heightmap-studio/scripts/backup_records.sh
