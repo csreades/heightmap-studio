@@ -6,3 +6,6 @@ nohup.out
 screenshots/*.stl
 exports.jsonl
 exports/
+# gh CLI state lands in the cwd when $HOME is unset (incl. the auth token)
+.config/
+.local/
