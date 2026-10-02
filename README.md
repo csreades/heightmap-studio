@@ -119,6 +119,13 @@ Base geometry (defaults tuned for Legions Imperialis):
   one wall angle.
 - **Edge lip** — the bump map fades to zero over the last N mm before the
   rim; the outer edge stays a crisp flat circle regardless of terrain.
+- **Recessed bottom (foot ring)** — the underside is recessed 0.2 mm
+  inside a flat 1.5 mm outer foot ring (45° walls, supportless on edge),
+  so the base stands on its rim: it sits level on small bumps and a
+  slightly bowed print can't rock. The QR code is debossed into the recess
+  floor, where it never rubs on the table. With pins on, the recess is
+  capped so the socket floors keep ≥ 0.6 mm of material under them (a hint
+  appears when that kicks in); without pins it can go to 1 mm.
 - **Pin sockets (subtracted)** — N flat-floored holes on an equidistant
   polar ring (default 5 × Ø6.1 × 1.4 mm deep), with a seeded position-noise
   dial (0 = perfect ring, 1 = up to 1 mm XY error per pin).

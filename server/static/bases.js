@@ -7,6 +7,7 @@ const BASE_OPTS = {
   base_height: 2.2, taper_deg: 3.9, px_per_mm: 5, exaggeration: 1.0,
   export_px_per_mm: 40,  // STL download resolution (40 px/mm = 25 micron)
   rim_lip_mm: 1.0,
+  recess_mm: 0.2, foot_ring_mm: 1.5,     // recessed bottom inside a flat foot ring
   pins_enabled: false, pin_count: 5, pin_diameter_mm: 6.1,
   pin_depth_mm: 1.4, pin_ring_frac: 0.55, pin_noise: 0.0,
   stack_enabled: false, stack_gap_mm: 2.0,
@@ -27,6 +28,8 @@ const BASE_PARAMS = [
   ["base_height", "Base height", 1, 6, 0.1, "mm"],
   ["taper_deg", "Side taper", -15, 15, 0.1, "°"],  // wall angle from vertical; + = narrower at top (LI style)
   ["rim_lip_mm", "Edge lip", 0, 4, 0.1, "mm"],   // flat rim: bump map fades out before the edge
+  ["recess_mm", "Bottom recess", 0, 1, 0.05, "mm"],  // capped by pin sockets when pins are on
+  ["foot_ring_mm", "Foot ring", 0.5, 4, 0.1, "mm"],  // flat outer ring the base stands on
   ["exaggeration", "Relief view ×", 0.5, 4, 0.1, "x"],
 ];
 const PIN_PARAMS = [
@@ -51,6 +54,7 @@ const SUPPORT_PARAMS = [
 let R3 = null;            // {renderer, scene, camera, controls, group}
 let lastBases = null;
 let updateExportEst = () => {};   // set in initBases; refreshes the size readout
+let updateRecessNote = () => {};  // set in initBases; says when pins cap the recess
 let basesTimer = null;
 let animating = false;
 
@@ -227,6 +231,43 @@ function qrDepthAt(x, z, qr, sideMM, depth) {
   return Math.min(depth, Math.min(du, dv));   // 45° chamfer walls
 }
 
+// ------------------------------------------------ bottom recess (foot ring)
+//
+// The bottom can be recessed inside a flat outer foot ring, like the foot
+// of a mug: the base then stands on the ring, so it sits level on small
+// bumps and a slightly bowed print can't rock. 45° walls print supportless
+// on edge, and the QR is debossed into the recess floor, where it never
+// rubs on the table. Pin sockets win: with pins on, the recess is capped so
+// the socket floors keep >= 0.6 mm of material under them.
+function recessDepth() {
+  let d = Math.max(0, BASE_OPTS.recess_mm || 0);
+  if (BASE_OPTS.pins_enabled)
+    d = Math.min(d, Math.max(0, BASE_OPTS.base_height - BASE_OPTS.pin_depth_mm - 0.6));
+  return d;
+}
+
+function recessInnerRadius(D, d) {     // where the foot ring starts
+  return Math.max(D / 2 - BASE_OPTS.foot_ring_mm, d + 0.5);
+}
+
+// bottom-face ring radii (centre and rim excluded): the QR grid when the
+// QR is on, plus exact rings at both edges of the recess wall
+function bottomRingRadii(D, ppm, qrOn, d) {
+  const Rb = D / 2;
+  const radii = [];
+  if (qrOn) {
+    const rq = Math.min(Rb - 0.5, 0.62 * D * 0.75);
+    const nq = Math.max(8, Math.ceil(rq / Math.max(0.06, 1 / ppm)));
+    for (let i = 1; i <= nq; i++) radii.push((i / nq) * rq);
+  }
+  if (d > 0) {
+    const rIn = recessInnerRadius(D, d);
+    radii.push(rIn - d, rIn);
+  }
+  radii.sort((a, b) => a - b);
+  return radii.filter((r, i) => r > 1e-6 && r < Rb - 1e-6 && (i === 0 || r - radii[i - 1] > 1e-6));
+}
+
 function buildBaseGeometry(base, baseIndex, exOverride, caps, weld) {
   const { heights, n, diameter: D, mean } = base;
   // LI bases are widest at the table and narrow toward the top surface:
@@ -310,28 +351,25 @@ function buildBaseGeometry(base, baseIndex, exOverride, caps, weld) {
     const a = (j / SECT) * Math.PI * 2;
     pos.push(Rb * Math.cos(a), 0, Rb * Math.sin(a));
   }
-  // bottom: flat fan normally; with QR enabled, a polar grid dense enough
-  // to resolve the debossed modules inside the QR square, then one jump
-  // ring out to the rim (the rest of the bottom stays flat).
+  // bottom: flat fan normally; with QR and/or recess, rings at the QR grid
+  // (dense enough for the debossed modules) and at the recess wall edges,
+  // then out to the rim. QR depth is measured from the recess floor.
   const qr = BASE_OPTS.qr_enabled ? (activeQR || placeholderQR()) : null;
   const qrSide = 0.62 * D;
   const qrDepth = BASE_OPTS.qr_depth_mm;
-  const botY = qr ? ((x, z) => qrDepthAt(x, z, qr, qrSide, qrDepth)) : (() => 0);
+  const rd = recessDepth();
+  const rIn = recessInnerRadius(D, rd);
+  const botY = (x, z) => Math.min(rd, Math.max(0, rIn - Math.hypot(x, z)))
+    + (qr ? qrDepthAt(x, z, qr, qrSide, qrDepth) : 0);
   let botRings = [];                 // vertex index of each bottom ring
   const botCenter = pos.length / 3;
   pos.push(0, botY(0, 0), 0);
-  if (qr) {
-    const rq = Math.min(Rb - 0.5, qrSide * 0.75);
-    const step = Math.max(0.06, 1.0 / ppm);
-    const nq = Math.max(8, Math.ceil(rq / step));
-    for (let i = 1; i <= nq; i++) {
-      const r = (i / nq) * rq;
-      botRings.push(pos.length / 3);
-      for (let j = 0; j < SECT; j++) {
-        const a = (j / SECT) * Math.PI * 2;
-        const x = r * Math.cos(a), z = r * Math.sin(a);
-        pos.push(x, botY(x, z), z);
-      }
+  for (const r of bottomRingRadii(D, ppm, !!qr, rd)) {
+    botRings.push(pos.length / 3);
+    for (let j = 0; j < SECT; j++) {
+      const a = (j / SECT) * Math.PI * 2;
+      const x = r * Math.cos(a), z = r * Math.sin(a);
+      pos.push(x, botY(x, z), z);
     }
   }
   botRings.push(wallBot);            // outermost bottom ring = wall base
@@ -555,6 +593,7 @@ function rebuildMeshes() {
     `· @(${b.x}, ${b.y}) rot ${b.rotation}°</div>`).join("");
   $("bases-stats").innerHTML = stats;
   updateExportEst();
+  updateRecessNote();
 }
 
 // ---------------------------------------------------------------- STL export
@@ -611,13 +650,8 @@ function exportEstimate(bases, ppm) {
     const rings = Math.min(Math.max(Math.round(Rb * ppm * 1.2), 32), 8192);
     const sect = Math.min(Math.max(Math.round(Math.PI * D * ppm * 1.2), 96), 32768);
     let t = sect + 2 * sect * (rings - 1) + 2 * sect;          // top + wall
-    if (BASE_OPTS.qr_enabled) {
-      const rq = Math.min(Rb - 0.5, 0.62 * D * 0.75);
-      const nq = Math.max(8, Math.ceil(rq / Math.max(0.06, 1 / ppm)));
-      t += sect + 2 * sect * nq;                               // QR bottom grid
-    } else {
-      t += sect;                                               // flat bottom fan
-    }
+    // bottom: centre fan + one quad band per ring (QR grid, recess wall)
+    t += sect + 2 * sect * bottomRingRadii(D, ppm, BASE_OPTS.qr_enabled, recessDepth()).length;
     tris += t;
     maxBase = Math.max(maxBase, t);
   }
@@ -1084,6 +1118,19 @@ function syncBaseControls() {
 function initBases() {
   const wrap = $("bases-controls");
   addBaseSliders(wrap, BASE_PARAMS);
+  const recessNote = document.createElement("div");
+  recessNote.className = "row";
+  recessNote.style.fontSize = "11px";
+  recessNote.style.opacity = "0.75";
+  wrap.appendChild(recessNote);
+  updateRecessNote = () => {
+    const got = recessDepth();
+    recessNote.textContent = BASE_OPTS.recess_mm > got + 1e-9
+      ? `Bottom recess capped at ${got.toFixed(2)} mm to keep 0.6 mm under the pin sockets.`
+      : "";
+    recessNote.hidden = !recessNote.textContent;
+  };
+  updateRecessNote();
 
   const pinsHead = document.createElement("h3");
   pinsHead.textContent = "Pin sockets (subtracted)";
