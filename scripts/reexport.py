@@ -9,10 +9,14 @@ Usage:
   .venv/bin/python scripts/reexport.py GUID [GUID ...]
   .venv/bin/python scripts/reexport.py --all          # every record on disk
   .venv/bin/python scripts/reexport.py --format stl GUID ...
+  .venv/bin/python scripts/reexport.py --sweep GUID   # support sweep of that design
+
+--sweep runs the Support sweep on each stored design instead: 13 test bases
+with fresh records of their own, saved as <design guid>_support_sweep_*.
 """
 import argparse
 import glob
-import html
+from html import escape as _esc
 import json
 import os
 import sys
@@ -25,11 +29,12 @@ OUT = os.path.join(ROOT, "exports", "files")
 BASE_URL = os.environ.get("HMS_URL", "http://127.0.0.1:8000")
 
 
-def reexport(pg, guid: str, fmt: str) -> list[str]:
+def reexport(pg, guid: str, fmt: str, sweep: bool = False) -> list[str]:
     pg.goto(f"{BASE_URL}/?restore={guid}", timeout=60000)
     pg.wait_for_load_state("networkidle", timeout=120000)
     pg.wait_for_timeout(1500)
-    pg.evaluate(f"window.__reuse_guid = '{guid}'")
+    if not sweep:   # a sweep mints its own records; plain re-exports keep the guid
+        pg.evaluate(f"window.__reuse_guid = '{guid}'")
     pg.get_by_text("Bases", exact=False).first.click()
     # wait for the preview fetch so state is fully wired
     pg.wait_for_function("() => lastBases !== null", timeout=180000)
@@ -37,19 +42,22 @@ def reexport(pg, guid: str, fmt: str) -> list[str]:
     saved = []
     done = []
     pg.on("download", lambda d: done.append(d))
-    label = "Export 3MF" if fmt == "3mf" else "Export STL"
+    if sweep:
+        label, expect = "Support sweep", 2            # 3MF + legend
+    else:
+        label = "Export 3MF" if fmt == "3mf" else "Export STL"
+        # STL also drops a params.json sidecar
+        expect = 1 if fmt == "3mf" else 2
     pg.get_by_text(label, exact=True).click()
-    # STL also drops a params.json sidecar; wait until downloads settle
-    expect = 1 if fmt == "3mf" else 2
     t0 = time.time()
     while len(done) < expect and time.time() - t0 < 600:
         pg.wait_for_timeout(500)
         # the export button re-enables when the work is finished
     pg.wait_for_timeout(1500)
     for d in done:
-        path = os.path.join(OUT, d.suggested_filename)
-        d.save_as(path)
-        saved.append(d.suggested_filename)
+        name = f"{guid}_{d.suggested_filename}" if sweep else d.suggested_filename
+        d.save_as(os.path.join(OUT, name))
+        saved.append(name)
     return saved
 
 
@@ -61,7 +69,7 @@ def write_index():
         if name == "index.html":
             continue
         mb = os.path.getsize(p) / 1e6
-        name = html.escape(name, quote=True)
+        name = _esc(name, quote=True)
         rows.append(f'<li><a href="/exports_files/{name}" download>{name}</a>'
                     f' <small>({mb:.0f} MB)</small></li>')
     html = ("<!doctype html><meta charset=utf-8><title>re-exports</title>"
@@ -77,6 +85,8 @@ def main():
     ap.add_argument("guids", nargs="*")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--format", choices=["3mf", "stl"], default="3mf")
+    ap.add_argument("--sweep", action="store_true",
+                    help="run the Support sweep on each design instead of re-exporting it")
     args = ap.parse_args()
 
     guids = args.guids
@@ -97,7 +107,7 @@ def main():
             pg.on("dialog", lambda d: d.accept())
             try:
                 t0 = time.time()
-                files = reexport(pg, guid, args.format)
+                files = reexport(pg, guid, args.format, args.sweep)
                 if files:
                     print(f"[{i}/{len(guids)}] {guid}: {', '.join(files)} "
                           f"({time.time()-t0:.0f}s)")
