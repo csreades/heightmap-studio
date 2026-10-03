@@ -147,13 +147,14 @@ Base geometry (defaults tuned for Legions Imperialis):
     sides. Contact pitch, width and gap are tunable; turn it off for the
     solid weld. (A support sweep print picked these defaults: 0.5 mm teeth
     every 2.5 mm removed easily with no line artefacts.)
-  - **Teeth under the base** (option) — the sheet sits a gap *behind* the
-    bottom face instead of in its plane, and each tooth reaches across to a
-    patch on the underside's outer foot ring that starts right at the rim
-    edge. The stubs end up on the bottom face, so sanding it flat removes
-    them completely and the rim's visible edge is never touched; the teeth
-    also brace the base like struts against sideways flapping. Same tooth
-    angles and contact area as rim teeth, so sweep results carry over.
+  - **Teeth under the base** (option) — the same blade and teeth, with
+    the whole support stepped back by the tab's thickness so the blade sits
+    just behind the bottom face, and the teeth run on 0.4 mm in under the
+    base, bonding to the underside's outer foot ring (0.1 mm into it)
+    instead of the rim edge. The stubs end up on the bottom face, so
+    sanding it flat removes them completely and the rim's visible edge is
+    never touched. Same tooth angles and contact area as rim teeth, so
+    sweep results carry over.
   - **Support sweep** — one plate of 19 identical bases whose supports run
     from sure things to likely failures, to find the best contact size in
     a single print: a solid-weld control, then contact widths 1.0 → 0.15 mm

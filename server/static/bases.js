@@ -445,106 +445,26 @@ function supportUnder() {
   return !!(BASE_OPTS.support_perf && BASE_OPTS.support_under);
 }
 
+// Where the support blade sits across the disc's thickness (local y).
+// Rim teeth: in the bottom slab's plane, [0, tf]. Teeth under the base: the
+// whole support stepped back by its own thickness, less a small overlap so
+// the lengthened teeth sink into the underside and fuse: [-tf + ov, ov].
+const UNDER_OVERLAP = 0.1;
+function bladeY() {
+  const tf = BASE_OPTS.support_thickness_mm;
+  return supportUnder() ? [-tf + UNDER_OVERLAP, UNDER_OVERLAP] : [0, tf];
+}
+
 // Raft placement across the disc's thickness (local y), shared by the
-// support builders and the stack layout. Rim supports: centred on the
-// disc's mid-thickness but never so high that the raft's lower face
-// leaves the tab (>= 0.1 mm into it). Under-base supports: the sheet sits
-// behind the bottom face, so the raft starts at the sheet's outer face.
+// support builder and the stack layout: centred on the disc's
+// mid-thickness, but never so high that its lower face leaves the blade
+// (>= 0.1 mm into it).
 function raftLayout() {
   const tf = BASE_OPTS.support_thickness_mm;
   const raftT = Math.max(BASE_OPTS.support_raft_mm, tf + 0.3);
-  if (supportUnder()) {
-    const back = -BASE_OPTS.perf_gap_mm - tf;          // sheet's outer face
-    // start the raft 0.1 mm inside the sheet: flush faces would put raft
-    // and sheet corners on identical points, which position-welding
-    // slicers read as a shared (non-manifold) edge
-    const y0 = back + 0.1;
-    return { raftT, cy: y0 + raftT / 2, yMin: back };
-  }
-  const cy = Math.min(BASE_OPTS.base_height / 2, tf - 0.1 + raftT / 2);
-  return { raftT, cy, yMin: Math.min(0, cy - raftT / 2) };
-}
-
-// "Teeth under the base": the sheet sits perf_gap_mm behind the bottom face
-// instead of in its plane, and each tooth reaches across that gap to a
-// patch on the underside's outer (foot) ring that starts right at the rim
-// edge -- so the lowest tooth still carries the disc's first layer, the
-// stubs end up on the bottom face where sanding it flat removes them, and
-// the rim's visible edge is never touched. Teeth sit at the same angles as
-// rim teeth and each patch (contact width along the rim x sheet thickness
-// inward) has the same area, so support-sweep results carry over.
-function underSupportGeometries(base, angles) {
-  const Rb = base.diameter / 2;
-  const tf = BASE_OPTS.support_thickness_mm;
-  const S = BASE_OPTS.support_height_mm;
-  const L = Math.min(BASE_OPTS.support_base_mm, 2 * Rb) / 2;
-  const gap = BASE_OPTS.perf_gap_mm;
-  const wt = BASE_OPTS.perf_contact_mm;
-  const xB = Rb + S;
-  // patch depth inward from the edge; kept on the flat foot ring
-  const c = recessDepth() > 0 ? Math.min(tf, Math.max(0.2, BASE_OPTS.foot_ring_mm - 0.1)) : tf;
-  const P = (r, a) => new THREE.Vector2(r * Math.cos(a), r * Math.sin(a));
-  const quad = (x0, y0, cx, cy, x1, y1, t) => new THREE.Vector2(
-    (1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x1,
-    (1 - t) * (1 - t) * y0 + 2 * (1 - t) * t * cy + t * t * y1);
-
-  // sheet: from just inside the teeth roots (under the base) out and down
-  // to the plate line, ending 1 mm past the outermost tooth
-  const reach = Math.max(...angles.map(Math.abs));
-  const thE = Math.min(Math.PI / 2 - 0.01, reach + (wt / 2 + gap + 1.0) / Rb);
-  const rIn = Rb - c - gap - 0.3, rOut = Rb + gap + 0.8;
-  const NA = 40, NB = 26;
-  const pts = [];
-  for (let k = 0; k <= NA; k++) pts.push(P(rIn, thE - (k / NA) * 2 * thE));
-  const s0 = P(rOut, -thE), e1 = P(rOut, thE);
-  pts.push(s0);
-  for (let k = 1; k <= NB; k++) pts.push(quad(s0.x, s0.y, Rb * 0.9, -(Rb + 1.6), xB, -L, k / NB));
-  pts.push(new THREE.Vector2(xB, L));
-  for (let k = 1; k <= NB; k++) pts.push(quad(xB, L, Rb * 0.9, Rb + 1.6, e1.x, e1.y, k / NB));
-  const sheet = new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: tf, bevelEnabled: false });
-  // extrude space (sx, sy, sz) -> base-local (sx, sz - gap - tf, -sy):
-  // determinant +1 (winding kept), sheet face toward the base at y = -gap
-  const sp = sheet.attributes.position;
-  for (let i = 0; i < sp.count; i++) sp.setXYZ(i, sp.getX(i), sp.getZ(i) - gap - tf, -sp.getY(i));
-  sheet.computeVertexNormals();
-  sheet.userData.teeth = angles.length;
-
-  // teeth: 45-degree frustums from the sheet (y = -gap) to the patch
-  // (c x wt at y = 0, outer edge on the rim), overlapping ov into the base
-  const ov = Math.min(0.1, 0.25 * Math.min(c, wt));
-  const verts = [], idx = [];
-  for (const a of angles) {
-    const ca = Math.cos(a), sa = Math.sin(a);
-    const pt = (r, t, y) => [r * ca - t * sa, y, -(r * sa + t * ca)];
-    const box = (y) => [Rb - c + y, Rb - y, wt / 2 - y];     // footprint grows as y drops
-    const [b0, b1, bt] = box(-gap), [t0, t1, tt] = box(ov);
-    const V = [pt(b0, -bt, -gap), pt(b1, -bt, -gap), pt(b1, bt, -gap), pt(b0, bt, -gap),
-               pt(t0, -tt, ov), pt(t1, -tt, ov), pt(t1, tt, ov), pt(t0, tt, ov)];
-    const cen = [0, 1, 2].map((d) => V.reduce((sum, v) => sum + v[d], 0) / 8);
-    const o = verts.length / 3;
-    for (const q of [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]) {
-      for (const [i, j, k] of [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]) {
-        const A = V[i], B = V[j], C2 = V[k];
-        const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], w = [C2[0] - A[0], C2[1] - A[1], C2[2] - A[2]];
-        const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
-        const m = [0, 1, 2].map((d) => (A[d] + B[d] + C2[d]) / 3 - cen[d]);
-        if (n[0] * m[0] + n[1] * m[1] + n[2] * m[2] >= 0) idx.push(o + i, o + j, o + k);
-        else idx.push(o + i, o + k, o + j);                  // keep faces pointing outward
-      }
-    }
-    verts.push(...V.flat());
-  }
-  const teethGeo = new THREE.BufferGeometry();
-  teethGeo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
-  teethGeo.setIndex(idx);
-  teethGeo.computeVertexNormals();
-
-  // raft under the sheet, same clearance rule as rim supports
-  const { raftT, cy } = raftLayout();
-  const raftH = Math.max(0.6, Math.min(2.0, S - Math.max(0.2, gap)));
-  const raft = new THREE.BoxGeometry(raftH, raftT, 2 * L);
-  raft.translate(xB - raftH / 2, cy, 0);
-  return [sheet, raft, teethGeo];
+  const [b0, b1] = bladeY();
+  const cy = Math.min(BASE_OPTS.base_height / 2, b1 - 0.1 + raftT / 2);
+  return { raftT, cy, yMin: Math.min(b0, cy - raftT / 2) };
 }
 
 function buildSupportGeometries(base) {
@@ -563,6 +483,10 @@ function buildSupportGeometries(base) {
   //    stamp perforation. A tooth always sits at angle 0 -- the rim's
   //    lowest point in print orientation, i.e. the disc's first layer,
   //    which must never start as an unsupported island.
+  //  - teeth under the base (support_under, perforated only): the whole
+  //    support steps back by its own thickness and the same teeth run on
+  //    in under the base, bonding to the underside's foot ring instead of
+  //    the rim edge -- the stubs sand off the bottom face.
   const Rb = base.diameter / 2;
   const tf = BASE_OPTS.support_thickness_mm;   // plate thickness (local y)
   const S = BASE_OPTS.support_height_mm;       // rim -> build plate distance
@@ -606,7 +530,12 @@ function buildSupportGeometries(base) {
     const wt = BASE_OPTS.perf_contact_mm;
     const wb = wt + 2 * gap;                   // 45° neck flanks
     const pitch = Math.max(BASE_OPTS.perf_pitch_mm, wb + 0.3);
-    const Rc = Rb - 0.3;                       // tips overlap into the disc
+    // tooth tips: 0.3 mm into the rim -- or, with teeth under the base,
+    // running on in under the outer (foot) ring, bonding to the underside
+    // over the same area as a rim contact (contact width x sheet thickness)
+    const ext = !BASE_OPTS.support_under ? 0.3
+      : recessDepth() > 0 ? Math.min(tf, Math.max(0.2, BASE_OPTS.foot_ring_mm - 0.1)) : tf;
+    const Rc = Rb - ext;
     const dA = pitch / Rb;                     // spacing measured along the rim
     const aB = wb / 2 / Ri;                    // tooth half-angle at its root
     // only keep teeth rooted in solid tab: it thins to nothing toward ±90°
@@ -630,8 +559,6 @@ function buildSupportGeometries(base) {
     edge.push(...arc(cur, -Math.PI / 2));
     if (teeth) trimA = Math.min(Math.PI / 2, reach + aB + 1.0 / Ri);   // 1 mm shoulder
   }
-  if (perf && BASE_OPTS.support_under && toothAngles.length)
-    return underSupportGeometries(base, toothAngles);
   let pts = [...edge, ...outer];
   if (perf && trimA < Math.PI / 2) {
     // the sheet past the outermost tooth never touches the disc -- trim it
@@ -643,12 +570,13 @@ function buildSupportGeometries(base) {
   const tab = new THREE.ExtrudeGeometry(new THREE.Shape(pts), {
     depth: tf, bevelEnabled: false,
   });
-  // extrude space (sx, sy, sz) -> base-local (x=sx, y=sz, z=-sy);
+  // extrude space (sx, sy, sz) -> base-local (x=sx, y=sz + y0, z=-sy);
   // determinant +1, so face winding is preserved
+  const [y0] = bladeY();
   const p = tab.attributes.position;
   for (let i = 0; i < p.count; i++) {
     const sx = p.getX(i), sy = p.getY(i), sz = p.getZ(i);
-    p.setXYZ(i, sx, sz, -sy);
+    p.setXYZ(i, sx, sz + y0, -sy);
   }
   tab.computeVertexNormals();
   tab.userData.teeth = teeth;
