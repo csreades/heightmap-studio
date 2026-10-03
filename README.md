@@ -141,8 +141,11 @@ Base geometry (defaults tuned for Legions Imperialis):
     teeth that neck down at 45° to 0.5 mm contacts every 2.5 mm, so it
     snaps off like a stamp perforation (~2.6 mm² total on a Ø25). A tooth
     always sits at the rim's lowest point in print orientation, so the
-    disc's first layer is never an unsupported island. Contact pitch,
-    width and gap are tunable; turn it off for the solid weld.
+    disc's first layer is never an unsupported island, and the sheet ends
+    1 mm past the outermost tooth rather than running on up the disc's
+    sides. Contact pitch, width and gap are tunable; turn it off for the
+    solid weld. (A support sweep print picked these defaults: 0.5 mm teeth
+    every 2.5 mm removed easily with no line artefacts.)
   - **Support sweep** — one plate of 13 identical bases whose supports run
     from sure things to likely failures, to find the best contact size in
     a single print: a solid-weld control, then contact widths 1.0 → 0.15 mm

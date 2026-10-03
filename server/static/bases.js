@@ -424,6 +424,22 @@ function insidePoly(poly, v) {
   return inside;
 }
 
+// Sutherland-Hodgman against one half-plane: keep where f(p) >= 0 (f linear).
+// Fine for our tab outline, which crosses each clip line exactly twice.
+function clipHalfPlane(poly, f) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const fa = f(a), fb = f(b);
+    if (fa >= 0) out.push(a);
+    if ((fa >= 0) !== (fb >= 0)) {
+      const t = fa / (fa - fb);
+      out.push(new THREE.Vector2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t));
+    }
+  }
+  return out.filter((p, i) => p.distanceTo(out[(i + 1) % out.length]) > 1e-9);
+}
+
 function buildSupportGeometries(base) {
   // Thin tab flush with the base's bottom face, coming off the rim
   // sideways (+x) as viewed here; parts print rotated 90° (disc on edge,
@@ -475,6 +491,7 @@ function buildSupportGeometries(base) {
   };
   const edge = [];
   let teeth = 0;
+  let trimA = Math.PI / 2;           // perforated: sheet ends just past the last tooth
   if (!perf) {
     for (let k = 0; k <= NA; k++) edge.push(P(Ri, Math.PI / 2 - (k / NA) * Math.PI));
   } else {
@@ -489,7 +506,7 @@ function buildSupportGeometries(base) {
     const plain = [...arc(Math.PI / 2, -Math.PI / 2), ...outer];
     const root = Ri + 0.6;
     const kMax = Math.floor(Math.PI / 2 / dA);
-    let cur = Math.PI / 2;
+    let cur = Math.PI / 2, reach = 0;
     for (let k = kMax; k >= -kMax; k--) {
       const a = k * dA;
       if (a + aB >= Math.PI / 2 || a - aB <= -Math.PI / 2) continue;
@@ -499,10 +516,19 @@ function buildSupportGeometries(base) {
                 P(Rc, a - wt / 2 / Rc), P(Rb, a - wt / 2 / Rb));
       cur = a - aB;
       teeth++;
+      reach = Math.max(reach, Math.abs(a));
     }
     edge.push(...arc(cur, -Math.PI / 2));
+    if (teeth) trimA = Math.min(Math.PI / 2, reach + aB + 1.0 / Ri);   // 1 mm shoulder
   }
-  const pts = [...edge, ...outer];
+  let pts = [...edge, ...outer];
+  if (perf && trimA < Math.PI / 2) {
+    // the sheet past the outermost tooth never touches the disc -- trim it
+    // to the wedge |angle| <= trimA instead of running on to the 90° cusps
+    const c = Math.cos(trimA), s = Math.sin(trimA);
+    pts = clipHalfPlane(pts, (p) => s * p.x - c * p.y);     // below the +trimA ray
+    pts = clipHalfPlane(pts, (p) => s * p.x + c * p.y);     // above the -trimA ray
+  }
   const tab = new THREE.ExtrudeGeometry(new THREE.Shape(pts), {
     depth: tf, bevelEnabled: false,
   });
