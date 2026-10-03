@@ -15,6 +15,7 @@ const BASE_OPTS = {
   support_enabled: false, support_height_mm: 2.0,   // tested in the support sweep
   support_thickness_mm: 0.4, support_raft_mm: 2.0,
   support_perf: true,                     // perforated breakaway (teeth)
+  support_under: false,                   // teeth bond to the underside, not the rim
   perf_pitch_mm: 2.5, perf_contact_mm: 0.5, perf_gap_mm: 0.4,
   support_base_mm: 40.0,  // clamps to disc width -> sides go straight down
 };
@@ -440,6 +441,108 @@ function clipHalfPlane(poly, f) {
   return out.filter((p, i) => p.distanceTo(out[(i + 1) % out.length]) > 1e-9);
 }
 
+function supportUnder() {
+  return !!(BASE_OPTS.support_perf && BASE_OPTS.support_under);
+}
+
+// Raft placement across the disc's thickness (local y), shared by the
+// support builders and the stack layout. Rim supports: centred on the
+// disc's mid-thickness but never so high that the raft's lower face
+// leaves the tab (>= 0.1 mm into it). Under-base supports: the sheet sits
+// behind the bottom face, so the raft starts at the sheet's outer face.
+function raftLayout() {
+  const tf = BASE_OPTS.support_thickness_mm;
+  const raftT = Math.max(BASE_OPTS.support_raft_mm, tf + 0.3);
+  if (supportUnder()) {
+    const y0 = -BASE_OPTS.perf_gap_mm - tf;
+    return { raftT, cy: y0 + raftT / 2, yMin: y0 };
+  }
+  const cy = Math.min(BASE_OPTS.base_height / 2, tf - 0.1 + raftT / 2);
+  return { raftT, cy, yMin: Math.min(0, cy - raftT / 2) };
+}
+
+// "Teeth under the base": the sheet sits perf_gap_mm behind the bottom face
+// instead of in its plane, and each tooth reaches across that gap to a
+// patch on the underside's outer (foot) ring that starts right at the rim
+// edge -- so the lowest tooth still carries the disc's first layer, the
+// stubs end up on the bottom face where sanding it flat removes them, and
+// the rim's visible edge is never touched. Teeth sit at the same angles as
+// rim teeth and each patch (contact width along the rim x sheet thickness
+// inward) has the same area, so support-sweep results carry over.
+function underSupportGeometries(base, angles) {
+  const Rb = base.diameter / 2;
+  const tf = BASE_OPTS.support_thickness_mm;
+  const S = BASE_OPTS.support_height_mm;
+  const L = Math.min(BASE_OPTS.support_base_mm, 2 * Rb) / 2;
+  const gap = BASE_OPTS.perf_gap_mm;
+  const wt = BASE_OPTS.perf_contact_mm;
+  const xB = Rb + S;
+  // patch depth inward from the edge; kept on the flat foot ring
+  const c = recessDepth() > 0 ? Math.min(tf, Math.max(0.2, BASE_OPTS.foot_ring_mm - 0.1)) : tf;
+  const P = (r, a) => new THREE.Vector2(r * Math.cos(a), r * Math.sin(a));
+  const quad = (x0, y0, cx, cy, x1, y1, t) => new THREE.Vector2(
+    (1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x1,
+    (1 - t) * (1 - t) * y0 + 2 * (1 - t) * t * cy + t * t * y1);
+
+  // sheet: from just inside the teeth roots (under the base) out and down
+  // to the plate line, ending 1 mm past the outermost tooth
+  const reach = Math.max(...angles.map(Math.abs));
+  const thE = Math.min(Math.PI / 2 - 0.01, reach + (wt / 2 + gap + 1.0) / Rb);
+  const rIn = Rb - c - gap - 0.3, rOut = Rb + gap + 0.8;
+  const NA = 40, NB = 26;
+  const pts = [];
+  for (let k = 0; k <= NA; k++) pts.push(P(rIn, thE - (k / NA) * 2 * thE));
+  const s0 = P(rOut, -thE), e1 = P(rOut, thE);
+  pts.push(s0);
+  for (let k = 1; k <= NB; k++) pts.push(quad(s0.x, s0.y, Rb * 0.9, -(Rb + 1.6), xB, -L, k / NB));
+  pts.push(new THREE.Vector2(xB, L));
+  for (let k = 1; k <= NB; k++) pts.push(quad(xB, L, Rb * 0.9, Rb + 1.6, e1.x, e1.y, k / NB));
+  const sheet = new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: tf, bevelEnabled: false });
+  // extrude space (sx, sy, sz) -> base-local (sx, sz - gap - tf, -sy):
+  // determinant +1 (winding kept), sheet face toward the base at y = -gap
+  const sp = sheet.attributes.position;
+  for (let i = 0; i < sp.count; i++) sp.setXYZ(i, sp.getX(i), sp.getZ(i) - gap - tf, -sp.getY(i));
+  sheet.computeVertexNormals();
+  sheet.userData.teeth = angles.length;
+
+  // teeth: 45-degree frustums from the sheet (y = -gap) to the patch
+  // (c x wt at y = 0, outer edge on the rim), overlapping ov into the base
+  const ov = Math.min(0.1, 0.25 * Math.min(c, wt));
+  const verts = [], idx = [];
+  for (const a of angles) {
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const pt = (r, t, y) => [r * ca - t * sa, y, -(r * sa + t * ca)];
+    const box = (y) => [Rb - c + y, Rb - y, wt / 2 - y];     // footprint grows as y drops
+    const [b0, b1, bt] = box(-gap), [t0, t1, tt] = box(ov);
+    const V = [pt(b0, -bt, -gap), pt(b1, -bt, -gap), pt(b1, bt, -gap), pt(b0, bt, -gap),
+               pt(t0, -tt, ov), pt(t1, -tt, ov), pt(t1, tt, ov), pt(t0, tt, ov)];
+    const cen = [0, 1, 2].map((d) => V.reduce((sum, v) => sum + v[d], 0) / 8);
+    const o = verts.length / 3;
+    for (const q of [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]) {
+      for (const [i, j, k] of [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]) {
+        const A = V[i], B = V[j], C2 = V[k];
+        const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], w = [C2[0] - A[0], C2[1] - A[1], C2[2] - A[2]];
+        const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+        const m = [0, 1, 2].map((d) => (A[d] + B[d] + C2[d]) / 3 - cen[d]);
+        if (n[0] * m[0] + n[1] * m[1] + n[2] * m[2] >= 0) idx.push(o + i, o + j, o + k);
+        else idx.push(o + i, o + k, o + j);                  // keep faces pointing outward
+      }
+    }
+    verts.push(...V.flat());
+  }
+  const teethGeo = new THREE.BufferGeometry();
+  teethGeo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+  teethGeo.setIndex(idx);
+  teethGeo.computeVertexNormals();
+
+  // raft under the sheet, same clearance rule as rim supports
+  const { raftT, cy } = raftLayout();
+  const raftH = Math.max(0.6, Math.min(2.0, S - Math.max(0.2, gap)));
+  const raft = new THREE.BoxGeometry(raftH, raftT, 2 * L);
+  raft.translate(xB - raftH / 2, cy, 0);
+  return [sheet, raft, teethGeo];
+}
+
 function buildSupportGeometries(base) {
   // Thin tab flush with the base's bottom face, coming off the rim
   // sideways (+x) as viewed here; parts print rotated 90° (disc on edge,
@@ -490,6 +593,7 @@ function buildSupportGeometries(base) {
     return out;
   };
   const edge = [];
+  const toothAngles = [];
   let teeth = 0;
   let trimA = Math.PI / 2;           // perforated: sheet ends just past the last tooth
   if (!perf) {
@@ -516,11 +620,14 @@ function buildSupportGeometries(base) {
                 P(Rc, a - wt / 2 / Rc), P(Rb, a - wt / 2 / Rb));
       cur = a - aB;
       teeth++;
+      toothAngles.push(a);
       reach = Math.max(reach, Math.abs(a));
     }
     edge.push(...arc(cur, -Math.PI / 2));
     if (teeth) trimA = Math.min(Math.PI / 2, reach + aB + 1.0 / Ri);   // 1 mm shoulder
   }
+  if (perf && BASE_OPTS.support_under && toothAngles.length)
+    return underSupportGeometries(base, toothAngles);
   let pts = [...edge, ...outer];
   if (perf && trimA < Math.PI / 2) {
     // the sheet past the outermost tooth never touches the disc -- trim it
@@ -542,7 +649,7 @@ function buildSupportGeometries(base) {
   tab.computeVertexNormals();
   tab.userData.teeth = teeth;
 
-  const raftT = Math.max(BASE_OPTS.support_raft_mm, tf + 0.3);
+  const { raftT, cy } = raftLayout();
   // raft: thickness raftT (slider), 2 mm tall off the plate, exactly the
   // base width long (2L clamps to the disc diameter at the default
   // support_base_mm). Centered on the disc's mid-thickness (base_height/2),
@@ -557,9 +664,6 @@ function buildSupportGeometries(base) {
   // can never swallow a tooth's neck.
   const RAFT_CLEAR = perf ? Math.max(0.2, gap) : 0.2;
   const raftH = Math.max(0.6, Math.min(2.0, S - RAFT_CLEAR));
-  // ...but never so high that it loses contact with the tab (thin rafts):
-  // keep the raft's lower face at least 0.1 mm into the tab's thickness.
-  const cy = Math.min(BASE_OPTS.base_height / 2, tf - 0.1 + raftT / 2);
   const raft = new THREE.BoxGeometry(raftH, raftT, 2 * L);
   raft.translate(xB - raftH / 2, cy, 0);
   return [tab, raft];
@@ -635,14 +739,11 @@ function layoutOffsets(bases) {
       // on the build plate (all raft bottoms coplanar at z=0), units
       // upright and center-aligned, `gap` of clearance between them
       const H = BASE_OPTS.base_height;
-      const tf = BASE_OPTS.support_thickness_mm;
-      const raftT = Math.max(BASE_OPTS.support_raft_mm, tf + 0.3);
-      const cy = Math.min(H / 2, tf - 0.1 + raftT / 2);
+      const { raftT, cy, yMin } = raftLayout();
       let cursor = 0;
       return bases.map((b) => {
         // unit extent along the thin (local y) axis: disc slab + relief
-        // peak on one side, raft overhang (if any) on the other
-        const yMin = Math.min(0, cy - raftT / 2);
+        // peak on one side, raft (and an under-base sheet) on the other
         const yMax = Math.max(H + (b.max - b.mean), cy + raftT / 2);
         const off = [0, 0, cursor - yMin];
         cursor += (yMax - yMin) + BASE_OPTS.stack_gap_mm;
@@ -852,12 +953,13 @@ async function export3MFGeos(hbases, record, minted) {
 // row B a sparser one; A0 is the old solid weld as a control. Every base
 // gets its own export record, so its QR code names its exact variant.
 const SWEEP_WIDTHS = [1.0, 0.7, 0.5, 0.35, 0.25, 0.15];   // sure -> likely fail
-const SWEEP_PITCHES = [2.5, 4.0];
+const SWEEP_ROWS = [   // [row, tooth spacing, teeth under the base?]
+  ["A", 2.5, false], ["B", 4.0, false], ["C", 2.5, true]];
 
 function sweepVariants() {
-  const out = [{ label: "A0", row: 0, col: 0, perf: false }];
-  SWEEP_PITCHES.forEach((pitch, r) => SWEEP_WIDTHS.forEach((contact, c) =>
-    out.push({ label: "AB"[r] + (c + 1), row: r, col: c + 1, perf: true, contact, pitch })));
+  const out = [{ label: "A0", row: 0, col: 0, perf: false, under: false }];
+  SWEEP_ROWS.forEach(([name, pitch, under], r) => SWEEP_WIDTHS.forEach((contact, c) =>
+    out.push({ label: name + (c + 1), row: r, col: c + 1, perf: true, contact, pitch, under })));
   return out;
 }
 
@@ -879,10 +981,11 @@ function sweepLegend(id, variants, base, ppm, placement) {
     `Support sheet ${t} mm thick, breakaway gap ${gap} mm (both fixed; only the contacts vary).`,
     "",
     "Plate layout: each row is a rack of discs side by side; column number",
-    "increases along the rack, row B sits beside row A along the rafts' length.",
+    "increases along the rack, rows A, B, C sit side by side along the rafts' length.",
     "  A0     solid weld (the old design) - the control",
-    `  A1-A6  teeth every ${SWEEP_PITCHES[0]} mm, contact width ${SWEEP_WIDTHS.join(" / ")} mm`,
-    `  B1-B6  same widths, teeth every ${SWEEP_PITCHES[1]} mm (sparser)`,
+    `  A1-A6  teeth on the rim every 2.5 mm, contact width ${SWEEP_WIDTHS.join(" / ")} mm`,
+    "  B1-B6  same widths, teeth every 4 mm (sparser)",
+    "  C1-C6  same widths every 2.5 mm, teeth UNDER the base (sand the bottom flat)",
     "Left to right is sure thing -> likely failure. Every base's bottom QR",
     "links to its exact settings; mark them with a pen as they come off.",
     "",
@@ -890,7 +993,7 @@ function sweepLegend(id, variants, base, ppm, placement) {
   ];
   for (const v of variants) {
     lines.push(row([
-      v.label, v.perf ? "perforated" : "solid weld",
+      v.label, !v.perf ? "solid weld" : v.under ? "under base" : "rim teeth",
       v.perf ? `${v.contact} mm` : "-", v.perf ? `${v.pitch} mm` : "-",
       v.perf ? v.teeth : "-", `${area(v).toFixed(2)} mm2`,
     ]) + `${QR_CANONICAL}/b/${v.guid}`);
@@ -899,6 +1002,7 @@ function sweepLegend(id, variants, base, ppm, placement) {
     "Reading it: the best setting is usually the narrowest contact that held",
     "and still snapped off cleanly, plus one step back toward the sure end",
     "for margin. If a whole row failed, spacing matters more than width.",
+    "Row C vs row A: same contacts, teeth on the underside vs the rim edge.",
     "After printing, check the vat film: a base that tore off mid-print can",
     "leave cured resin stuck to it.");
   return lines.join("\n") + "\n";
@@ -929,7 +1033,7 @@ async function exportSupportSweep() {
     for (const v of variants) {
       v.opts = {
         ...BASE_OPTS, count: 1, large_fraction: 0, support_enabled: true,
-        stack_enabled: false, support_perf: v.perf,
+        stack_enabled: false, support_perf: v.perf, support_under: v.under,
         ...(v.perf ? { perf_contact_mm: v.contact, perf_pitch_mm: v.pitch } : {}),
       };
       const r = await fetch("/api/log_export", {
@@ -960,9 +1064,9 @@ async function exportSupportSweep() {
         const X0 = v.row * rowPitch, Y0 = v.col * colPitch;
         const map = (x, y, z) => [z + X0, y + Y0, zTop - x];
         const disc = buildBaseGeometry(base, 0, 1.0, { rings: 8192, sect: 32768 }, true);
-        const [tab, raft] = buildSupportGeometries(base);
-        v.teeth = tab.userData.teeth;
-        for (const g of [disc, tab, raft]) { meshes.push(prepMesh(g, map)); built.push(g); }
+        const support = buildSupportGeometries(base);      // sheet, raft (+ teeth when under the base)
+        v.teeth = support[0].userData.teeth;
+        for (const g of [disc, ...support]) { meshes.push(prepMesh(g, map)); built.push(g); }
       }
     } finally {
       Object.assign(BASE_OPTS, saved);
@@ -972,7 +1076,7 @@ async function exportSupportSweep() {
       Application: "Battlefield Heightmap Studio",
       Title: `support sweep ${id}`,
       "hms:sweep": JSON.stringify(variants.map((v) => ({
-        label: v.label, guid: v.guid, perforated: v.perf, contact_mm: v.contact ?? null,
+        label: v.label, guid: v.guid, perforated: v.perf, under: v.under, contact_mm: v.contact ?? null,
         pitch_mm: v.pitch ?? null, teeth: v.teeth }))),
     });
     built.forEach((g) => g.dispose());
@@ -1170,6 +1274,7 @@ function initBases() {
   addToggle(wrap, "support_enabled", "Include support");
   addBaseSliders(wrap, SUPPORT_PARAMS);
   addToggle(wrap, "support_perf", "Perforated breakaway (contact teeth)");
+  addToggle(wrap, "support_under", "Teeth under the base (sand off)");
   addBaseSliders(wrap, PERF_PARAMS);
 
   // stack-for-print: one upright, center-aligned column with controllable
