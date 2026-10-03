@@ -12,7 +12,7 @@ const BASE_OPTS = {
   pin_depth_mm: 1.4, pin_ring_frac: 0.55, pin_noise: 0.0,
   stack_enabled: false, stack_gap_mm: 2.0,
   qr_enabled: true, qr_depth_mm: 0.25,   // traceability QR debossed in the bottom
-  support_enabled: false, support_height_mm: 4.0,
+  support_enabled: false, support_height_mm: 2.0,   // tested in the support sweep
   support_thickness_mm: 0.4, support_raft_mm: 2.0,
   support_perf: true,                     // perforated breakaway (teeth)
   perf_pitch_mm: 2.5, perf_contact_mm: 0.5, perf_gap_mm: 0.4,

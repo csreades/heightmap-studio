@@ -131,9 +131,10 @@ Base geometry (defaults tuned for Legions Imperialis):
   dial (0 = perfect ring, 1 = up to 1 mm XY error per pin).
 - **Print support** — optional thin snap-off tab (0.4 mm) flush with the
   base's bottom face: a crescent hugging a full 180° of the rim, sweeping
-  to a straight line on the build plate with a thicker raft foot (2 mm
-  tall × base width, centered on the disc's mid-thickness, always ≥ 0.2 mm
-  clear of the disc). With supports on, the STL exports in print
+  to a straight line on the build plate with a thicker raft foot (up to
+  2 mm tall × base width, centered on the disc's mid-thickness, always
+  ≥ 0.2 mm clear of the disc). Default support height is 2 mm (rim to
+  plate), the height the support sweep was printed and validated at. With supports on, the STL exports in print
   orientation — discs on edge, rafts at z=0.
   - **Perforated breakaway** (default) — instead of one continuous weld
     along the rim (~16 mm² of resin to break on a Ø25 base), the tab stops
