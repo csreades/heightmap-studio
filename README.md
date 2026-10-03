@@ -174,6 +174,15 @@ Base geometry (defaults tuned for Legions Imperialis):
 
 ![Stack for print — racked units, every raft on the build plate](screenshots/readme_stack.jpg)
 
+- **Print bed** — a full plate in one go: *Bed bases* different bases
+  (default 30) at the current settings, in print orientation, spread
+  evenly over the Saturn 4 Ultra 16K build area as a grid of racks (30
+  Ø25 bases = 3 rows × 10). **Each base gets its own code and record**, so
+  any one can be looked up or reprinted on its own later (a base's crop
+  depends only on the placement seed and its index). Downloads a 3MF and a
+  legend mapping codes to plate positions; `scripts/send_build.py` takes it
+  from there. 30 bases at 25 px/mm is ~53 M triangles.
+
 - **Base configs** — save/load the whole setup (base options, pins,
   support, placement seed) with the terrain preset embedded
   (`presets/bases/*.json`).
@@ -252,7 +261,9 @@ wraps the mesh as-is into a VOXL scene with **empty support lists**
 (the processor's `prepare` step would re-orient it, lift it 5 mm and grow
 its own supports on top of ours), slices it with the server's saved
 settings, stops if the bridge check flags any layer, and uploads the
-print file. It never starts a print.
+print file. It never starts a print. Big builds stream through it (a
+30-base bed is ~4 GB of model XML); one VOXL mesh holds up to ~85 M
+triangles.
 
 ```bash
 .venv/bin/python scripts/send_build.py voxl build.3mf --name NAME   # -> NAME.voxl

@@ -198,23 +198,27 @@ class BasesIn(BaseModel):
     d_large: float = 32.0
     px_per_mm: float = 5.0
     spread_mm: float = 1500.0
+    index_offset: int = 0      # first base index of the placement set
 
 
 @app.post("/api/bases")
 def post_bases(body: BasesIn):
     """Example base crops for the 3D base viewer: deterministic positions/
-    rotations from placement_seed, square height grids covering each disc."""
+    rotations from placement_seed, square height grids covering each disc.
+    Base i depends only on (placement_seed, i), so index_offset fetches any
+    slice of the set: a per-base export record is count 1 at its index."""
     from battlefield.noise import hash01
 
     dom = _get_domain(body.key)
     count = max(1, min(int(body.count), 24))
+    first = max(0, int(body.index_offset))
     # Viewer requests ~5 px/mm; STL export requests much higher (25 micron =
     # 40 px/mm). Clamp overall, then per-base so no single crop grid exceeds
     # ~2600 px/side (bounds memory + noise-eval time on the big discs).
     ppm = min(max(body.px_per_mm, 2.0), 50.0)
 
     specs = []
-    for i in range(count):
+    for i in range(first, first + count):
         def h(tag, i=i):
             return float(hash01(np.int64(i), np.int64(tag),
                                 body.placement_seed & 0xFFFFFFFF))
@@ -224,7 +228,7 @@ def post_bases(body: BasesIn):
             "d": d, "ppm": min(ppm, 2600.0 / d),
             "x": (h(1) - 0.5) * body.spread_mm,
             "y": (h(2) - 0.5) * body.spread_mm,
-            "rot": h(3) * 360.0,
+            "rot": h(3) * 360.0, "index": i,
         })
 
     # crops are pure functions of world coordinates and the heavy numpy
@@ -233,6 +237,7 @@ def post_bases(body: BasesIn):
     def render(s):
         crop = dom.crop(s["x"], s["y"], s["d"], s["d"], s["rot"], s["ppm"])
         return {
+            "index": s["index"],
             "x": round(s["x"], 2), "y": round(s["y"], 2),
             "rotation": round(s["rot"], 1),
             "diameter": s["d"], "n": crop.shape[0], "px_per_mm": s["ppm"],
@@ -423,6 +428,12 @@ interchangeable.</p><p><a href="/">Open the studio</a></p>"""
     sweep_line = (f"<p>Support sweep <code>{e(sweep.get('id', '?'))}</code> · test base "
                   f"<b>{e(sweep.get('label', '?'))}</b> of {e(sweep.get('variants', '?'))}</p>"
                   if isinstance(sweep, dict) else "")
+    bed = rec.get("bed")
+    if isinstance(bed, dict):
+        sweep_line += (f"<p>Print bed <code>{e(bed.get('id', '?'))}</code> · base "
+                       f"<b>{e(bed.get('index', 0) + 1 if isinstance(bed.get('index'), int) else '?')}</b>"
+                       f" of {e(bed.get('bases', '?'))} · row {e(bed.get('row', '?'))}, "
+                       f"column {e(bed.get('col', '?'))}</p>")
     rows = "".join(
         f"<tr><td>{e(k)}</td><td>{e(json.dumps(bo[k]))}</td></tr>"
         for k in sorted(bo))

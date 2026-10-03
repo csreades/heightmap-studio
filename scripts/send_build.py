@@ -32,22 +32,53 @@ PLATE_MM = (211.68, 118.37)   # Saturn 4 Ultra 16K build area (X, Y)
 
 # ------------------------------------------------------------------ 3MF in
 
-def read_3mf(path):
-    """Vertices (N,3 float64) and triangles (M,3 int64) of every object in
-    our own 3MF exports (one object; tidy <vertex>/<triangle> tags)."""
-    xml = zipfile.ZipFile(path).read("3D/3dmodel.model")
-    a = xml.index(b"<vertices>") + 10
-    b = xml.index(b"</vertices>")
-    vb = (xml[a:b].replace(b'<vertex x="', b" ").replace(b'" y="', b" ")
-          .replace(b'" z="', b" ").replace(b'"/>', b" "))
-    V = np.fromstring(vb.decode("ascii"), dtype=np.float64, sep=" ").reshape(-1, 3)
-    del vb
-    a = xml.index(b"<triangles>") + 11
-    b = xml.index(b"</triangles>")
-    tb = (xml[a:b].replace(b'<triangle v1="', b" ").replace(b'" v2="', b" ")
-          .replace(b'" v3="', b" ").replace(b'"/>', b" "))
-    del xml
-    T = np.fromstring(tb.decode("ascii"), dtype=np.int64, sep=" ").reshape(-1, 3)
+def read_3mf(path, chunk=1 << 26):
+    """Vertices (N,3 float64) and triangles (M,3 int32) of our own 3MF
+    exports (one object; tidy <vertex>/<triangle> tags). Streams the model
+    XML in 64 MB pieces: a 30-base print bed is ~4 GB of XML, which won't
+    fit in memory whole (let alone the copies a whole-file parse makes)."""
+    def nums(seg, tags, dtype):
+        for t in tags:
+            seg = seg.replace(t, b" ")
+        return np.fromstring(seg.decode("ascii"), dtype=dtype, sep=" ")
+
+    vtags = (b'<vertex x="', b'" y="', b'" z="', b'"/>')
+    ttags = (b'<triangle v1="', b'" v2="', b'" v3="', b'"/>')
+    verts, tris = [], []
+    mode, buf, eof = "pre", b"", False
+    with zipfile.ZipFile(path) as z, z.open("3D/3dmodel.model") as f:
+        while mode != "done":
+            if not eof:
+                data = f.read(chunk)
+                eof = not data
+                buf += data
+            if mode in ("pre", "mid"):                 # skip to the next section
+                tag = b"<vertices>" if mode == "pre" else b"<triangles>"
+                i = buf.find(tag)
+                if i < 0:
+                    if eof:
+                        raise ValueError(f"{tag.decode()} missing from {path}")
+                    buf = buf[-16:]                     # a tag may straddle the cut
+                    continue
+                buf, mode = buf[i + len(tag):], ("v" if mode == "pre" else "t")
+            end_tag, tags, out, dtype = ((b"</vertices>", vtags, verts, np.float64) if mode == "v"
+                                         else (b"</triangles>", ttags, tris, np.int64))
+            i = buf.find(end_tag)
+            if i >= 0:                                  # section ends in this buffer
+                out.append(nums(buf[:i], tags, dtype))
+                buf, mode = buf[i + len(end_tag):], ("mid" if mode == "v" else "done")
+            elif eof:
+                raise ValueError(f"{end_tag.decode()} missing from {path}")
+            else:                                       # parse whole elements only
+                cut = buf.rfind(b"/>") + 2
+                if cut > 1:
+                    out.append(nums(buf[:cut], tags, dtype))
+                    buf = buf[cut:]
+            if mode == "t" or mode == "done":           # keep triangles compact
+                tris[:] = [a.astype(np.int32) if a.dtype != np.int32 else a for a in tris]
+    V = np.concatenate(verts).reshape(-1, 3)
+    del verts
+    T = np.concatenate(tris).reshape(-1, 3)
     return V, T
 
 
@@ -97,7 +128,8 @@ def write_voxl(V, T, out, name):
         usize += len(chunk)
         parts.append(comp.compress(chunk))
     parts.append(comp.flush())
-    mesh = b"".join(parts)
+    del Vc
+    mesh_len = sum(map(len, parts))    # written piecewise: no second ~GB copy
 
     now = datetime.datetime.now(datetime.timezone.utc)
     iso = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -125,50 +157,72 @@ def write_voxl(V, T, out, name):
     def js(o):
         return json.dumps(o, separators=(",", ":")).encode()
 
-    chunks = [  # (type, index, compression, payload, uncompressed size)
-        (b"META", 0, 0, js(meta), None),
-        (b"SCNE", 0, 0, js(scene), None),
-        (b"MODL", 0, 1, zlib.compress(js(models), 6), len(js(models))),
-        (b"MESH", 0, 1, mesh, usize),
-        (b"SUPP", 0, 1, zlib.compress(js(supports), 6), len(js(supports))),
+    chunks = [  # (type, index, compression, payload pieces, uncompressed size)
+        (b"META", 0, 0, [js(meta)], None),
+        (b"SCNE", 0, 0, [js(scene)], None),
+        (b"MODL", 0, 1, [zlib.compress(js(models), 6)], len(js(models))),
+        (b"MESH", 0, 1, parts, usize),
+        (b"SUPP", 0, 1, [zlib.compress(js(supports), 6)], len(js(supports))),
     ]
+    if usize >= 2 ** 32:
+        raise SystemExit(f"mesh is {usize / 1e9:.2f} GB as STL; VOXL v2 sizes are 32-bit "
+                         "(max ~85 M triangles): lower the export resolution")
     head = struct.pack("<4sHHII", b"VOXL", 2, 0, len(chunks), 0)
     off = 16 + 20 * len(chunks)
-    dirs, body = [], []
-    for typ, idx, cmp_, data, us in chunks:
-        dirs.append(struct.pack("<4sHHIII", typ, idx, cmp_, off, len(data),
-                                us if us is not None else len(data)))
-        body.append(data)
-        off += len(data)
+    dirs = []
+    for typ, idx, cmp_, pieces, us in chunks:
+        size = sum(map(len, pieces))
+        dirs.append(struct.pack("<4sHHIII", typ, idx, cmp_, off, size,
+                                us if us is not None else size))
+        off += size
     if off >= 2 ** 32:
         raise SystemExit("VOXL v2 offsets are 32-bit; build too large")
     with open(out, "wb") as f:
         f.write(head)
         f.writelines(dirs)
-        f.writelines(body)
+        for *_, pieces, _us in chunks:
+            f.writelines(pieces)
     return {"triangles": int(len(T)), "stl_bytes": usize, "voxl_bytes": off,
             "footprint_mm": [round(float(hi[0] - lo[0]), 2), round(float(hi[1] - lo[1]), 2)],
             "height_mm": round(height, 2), "min_z": float(lo[2])}
 
 
 def check_voxl(path):
-    """Re-read a VOXL with the same rules as DragonFruit's parseVoxlBinaryV2."""
-    b = open(path, "rb").read()
-    magic, ver, _flags, count, _r = struct.unpack_from("<4sHHII", b, 0)
-    assert magic == b"VOXL" and ver in (2, 3), (magic, ver)
-    found = {}
-    for i in range(count):
-        typ, idx, cmp_, off, size, us = struct.unpack_from("<4sHHIII", b, 16 + 20 * i)
-        assert off + size <= len(b), f"{typ} beyond file"
-        data = zlib.decompress(b[off:off + size]) if cmp_ == 1 else b[off:off + size]
-        assert cmp_ in (0, 1) and len(data) == us, f"{typ} size mismatch"
-        found[(typ.decode(), idx)] = data
-    assert ("META", 0) in found and ("SUPP", 0) in found
+    """Re-read a VOXL with the same rules as DragonFruit's parseVoxlBinaryV2.
+    The mesh is decompressed as a stream and only measured (it can be GBs)."""
+    total = os.path.getsize(path)
+    found, mesh = {}, None
+    with open(path, "rb") as fh:
+        magic, ver, _flags, count, _r = struct.unpack("<4sHHII", fh.read(16))
+        assert magic == b"VOXL" and ver in (2, 3), (magic, ver)
+        dirs = [struct.unpack("<4sHHIII", fh.read(20)) for _ in range(count)]
+        for typ, idx, cmp_, off, size, us in dirs:
+            assert off + size <= total, f"{typ} beyond file"
+            assert cmp_ in (0, 1), f"{typ} compression {cmp_}"
+            fh.seek(off)
+            if typ == b"MESH":
+                d, n, head, left = zlib.decompressobj(), 0, b"", size
+                while left:
+                    piece = fh.read(min(left, 1 << 24))
+                    left -= len(piece)
+                    out = d.decompress(piece) if cmp_ == 1 else piece
+                    if len(head) < 84:
+                        head += out[:84 - len(head)]
+                    n += len(out)
+                n += len(d.flush()) if cmp_ == 1 else 0
+                assert n == us, f"MESH size mismatch ({n} vs {us})"
+                mesh = (n, head)
+                continue
+            data = fh.read(size)
+            data = zlib.decompress(data) if cmp_ == 1 else data
+            assert len(data) == us, f"{typ} size mismatch"
+            found[(typ.decode(), idx)] = data
+    assert ("META", 0) in found and ("SUPP", 0) in found and mesh
     models = json.loads(found[("MODL", 0)])
-    stl = found[("MESH", 0)]
-    assert len(stl) == models[0]["mesh"]["uncompressedSizeBytes"]
-    ntri = struct.unpack_from("<I", stl, 80)[0]
-    assert len(stl) == 84 + 50 * ntri == 84 + 50 * models[0]["polygonCount"]
+    stl_len, stl_head = mesh
+    assert stl_len == models[0]["mesh"]["uncompressedSizeBytes"]
+    ntri = struct.unpack_from("<I", stl_head, 80)[0]
+    assert stl_len == 84 + 50 * ntri == 84 + 50 * models[0]["polygonCount"]
     supp = json.loads(found[("SUPP", 0)])
     return {"models": len(models), "triangles": ntri,
             "supports": sum(len(v) for v in supp.values() if isinstance(v, list))}

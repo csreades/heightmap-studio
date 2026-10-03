@@ -4,6 +4,8 @@
 
 const BASE_OPTS = {
   count: 6, large_fraction: 0.35, d_small: 25, d_large: 40,
+  index_offset: 0,       // first base of the placement set (per-base records: count 1 at its index)
+  bed_count: 30,         // bases in a Print bed export
   base_height: 2.2, taper_deg: 3.9, px_per_mm: 5, exaggeration: 1.0,
   export_px_per_mm: 40,  // STL download resolution (40 px/mm = 25 micron)
   rim_lip_mm: 1.0,
@@ -129,6 +131,7 @@ async function requestBases(ppm, overrides = {}) {
       key: state.key,
       placement_seed: parseInt($("bases-seed").value) || 1,
       count: BASE_OPTS.count,
+      index_offset: BASE_OPTS.index_offset || 0,
       large_fraction: BASE_OPTS.large_fraction,
       d_small: BASE_OPTS.d_small,
       d_large: BASE_OPTS.d_large,
@@ -509,7 +512,7 @@ function buildBaseGeometry(base, baseIndex, exOverride, caps, weld) {
     return H + (sampleGrid(heights, n, D, x, z) - mean) * ex * f;
   };
   // pins: flat-floored sockets, depth measured from the surface at the pin
-  const pins = basePins(baseIndex, Rt);
+  const pins = basePins(base.index ?? baseIndex, Rt);   // global index: same pins in any slice
   for (const p of pins) {
     // depth measured from the NOMINAL slab top (base_height), not the
     // textured surface: every socket floor sits on one global plane
@@ -860,7 +863,7 @@ function rebuildMeshes() {
   R3.group = group;
 
   const stats = lastBases.map((b, i) =>
-    `<div>#${i + 1} · Ø${b.diameter} mm · relief ${(b.max - b.min).toFixed(2)} mm ` +
+    `<div>#${(b.index ?? i) + 1} · Ø${b.diameter} mm · relief ${(b.max - b.min).toFixed(2)} mm ` +
     `· @(${b.x}, ${b.y}) rot ${b.rotation}°</div>`).join("");
   $("bases-stats").innerHTML = stats;
   updateExportEst();
@@ -1246,6 +1249,138 @@ async function exportSupportSweep() {
   }
 }
 
+// ---------------------------------------------------------------- print bed
+//
+// A full plate for the printer: bed_count different bases (indices 0..n-1
+// of the placement seed, current settings, supports forced on) in print
+// orientation, spread evenly over the build area as a grid of racks. Rafts
+// run along X here; scripts/send_build.py turns the build 90° so they lie
+// along the plate's short side. Every base gets its own export record
+// (count 1 at its index), so the code on its bottom names exactly that base
+// and restores it alone.
+const BED_AREA_MM = [118.37, 211.68];   // Saturn 4 Ultra 16K plate, in this frame
+const BED_MARGIN_MM = 5, BED_MIN_GAP_MM = 5;
+
+async function exportBed() {
+  if (!state.key) return;
+  const btn = $("bases-bed");
+  const label0 = btn.textContent;
+  const n = Math.max(1, Math.round(BASE_OPTS.bed_count));
+  const ppm = BASE_OPTS.export_px_per_mm;
+  const caps = { rings: 8192, sect: 32768 };
+  const saved = { ...BASE_OPTS };
+  const built = [];
+  btn.disabled = true;
+  btn.textContent = "Rendering bed…";
+  try {
+    const bases = [];
+    for (let off = 0; off < n; off += 24) {      // the server renders <= 24 per request
+      const got = await requestBases(ppm, { count: Math.min(24, n - off), index_offset: off });
+      if (!got || !got.length) throw new Error("couldn't fetch the bases");
+      bases.push(...got);
+    }
+    const est = exportEstimate(bases, ppm);
+    if (est.peak3mf > EXPORT_MEM_BUDGET && !confirm(
+        `This bed is ~${(est.tris / 1e6).toFixed(0)} M triangles and needs roughly ` +
+        `${(est.peak3mf / 1e9).toFixed(1)} GB of browser memory. Lower "Download res" or ` +
+        `"Bed bases".\n\nTry anyway?`)) return;
+    Object.assign(BASE_OPTS, { support_enabled: true, stack_enabled: false });
+
+    // unit footprints in print orientation: along the raft = local z, across
+    // = local y (disc from its foot plane to its highest relief, plus support)
+    const H = BASE_OPTS.base_height;
+    const units = bases.map((base) => {
+      const support = buildSupportGeometries(base);
+      let z0 = -base.diameter / 2, z1 = base.diameter / 2;
+      let y0 = 0, y1 = H + Math.max(0, base.max - base.mean);
+      for (const g of support) {
+        const p = g.attributes.position.array;
+        for (let i = 0; i < p.length; i += 3) {
+          y0 = Math.min(y0, p[i + 1]); y1 = Math.max(y1, p[i + 1]);
+          z0 = Math.min(z0, p[i + 2]); z1 = Math.max(z1, p[i + 2]);
+        }
+      }
+      return { base, support, z0, z1, y0, y1 };
+    });
+    const L = Math.max(...units.map((u) => u.z1 - u.z0));
+    const T = Math.max(...units.map((u) => u.y1 - u.y0));
+    const [AX, AY] = BED_AREA_MM;
+    const rows = Math.min(n, Math.max(1, Math.floor(
+      (AX - 2 * BED_MARGIN_MM + BED_MIN_GAP_MM) / (L + BED_MIN_GAP_MM))));
+    const cols = Math.ceil(n / rows);
+    const pitchX = rows > 1 ? (AX - 2 * BED_MARGIN_MM - L) / (rows - 1) : 0;
+    const pitchY = cols > 1 ? (AY - 2 * BED_MARGIN_MM - T) / (cols - 1) : 0;
+    if (cols > 1 && pitchY < T + 1) throw new Error(`${n} bases don't fit on the plate`);
+    units.forEach((u, k) => {
+      u.row = Math.floor(k / cols);
+      const inRow = Math.min(cols, n - u.row * cols);      // a short last row is centred
+      u.col = k % cols + (cols - inRow) / 2;
+    });
+
+    const placement = parseInt($("bases-seed").value) || 1;
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(4)),
+      (b) => b.toString(16).padStart(2, "0")).join("");
+    btn.textContent = "Minting codes…";
+    for (const [k, u] of units.entries()) {
+      const r = await fetch("/api/log_export", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base_opts: { ...BASE_OPTS, count: 1, index_offset: u.base.index ?? k },
+          placement_seed: placement,
+          terrain: { seed: state.seed, config: state.config },
+          bed: { id, index: u.base.index ?? k, bases: n, row: u.row + 1, col: Math.round(u.col) + 1,
+                 rows, cols, px_per_mm: ppm },
+        }),
+      });
+      if (!r.ok) throw new Error("couldn't store the export records");
+      u.code = (await r.json()).guid;
+    }
+
+    btn.textContent = "Building bed…";
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    const meshes = [];
+    for (const [k, u] of units.entries()) {
+      activeCode = u.code;
+      const disc = buildBaseGeometry(u.base, u.base.index ?? k, 1.0, caps, true);
+      const zTop = u.base.diameter / 2 + BASE_OPTS.support_height_mm;
+      const X0 = (u.row - (rows - 1) / 2) * pitchX - (u.z0 + u.z1) / 2;
+      const Y0 = (u.col - (cols - 1) / 2) * pitchY - (u.y0 + u.y1) / 2;
+      const map = (x, y, z) => [z + X0, y + Y0, zTop - x];
+      for (const g of [disc, ...u.support]) { meshes.push(prepMesh(g, map)); built.push(g); }
+    }
+    activeCode = null;
+    const chunks = await build3MF(meshes, {
+      Application: "Battlefield Heightmap Studio",
+      Title: `print bed ${id}`,
+      "hms:bed": JSON.stringify(units.map((u, k) => ({
+        code: u.code, index: u.base.index ?? k, row: u.row + 1, col: Math.round(u.col) + 1 }))),
+    });
+    downloadBlob(chunks, "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+      `print_bed_${id}.3mf`);
+    const legend = [
+      `Print bed ${id}: ${n} bases (placement seed ${placement}, indices 0-${n - 1}), ` +
+        `${ppm} px/mm, terrain seed ${state.seed}`,
+      `${rows} rows x ${cols} across, ${pitchX.toFixed(1)} mm between rows and ` +
+        `${pitchY.toFixed(1)} mm between bases (centre to centre), in print orientation.`,
+      "Each base's code is on its bottom; /b/<code> or Find a base restores just that base.",
+      "",
+      "row  col  base  code    record",
+      ...units.map((u, k) => `${String(u.row + 1).padEnd(5)}${String(Math.round(u.col) + 1).padEnd(5)}` +
+        `${String((u.base.index ?? k) + 1).padEnd(6)}${u.code}  ${QR_CANONICAL}/b/${u.code}`),
+    ].join("\n") + "\n";
+    downloadBlob([legend], "text/plain", `print_bed_${id}.txt`);
+  } catch (e) {
+    console.error("print bed failed:", e);
+    alert(`Print bed failed: ${e.message}`);
+  } finally {
+    Object.assign(BASE_OPTS, saved);
+    activeCode = null;
+    built.forEach((g) => g.dispose());
+    btn.disabled = false;
+    btn.textContent = label0;
+  }
+}
+
 function exportSTLGeos(hbases, record, guid) {
   // print-true geometry: relief exaggeration forced to 1x
   const geos = baseGeometries(1.0, hbases, { rings: 8192, sect: 32768 }, true);
@@ -1451,6 +1586,7 @@ async function findBase() {
   const facts = [
     rec.ts ? `exported ${String(rec.ts).replace("T", " ").replace("+00:00", " UTC")}` : null,
     rec.sweep ? `support sweep base ${rec.sweep.label}`
+      : rec.bed ? `print bed base ${rec.bed.index + 1} of ${rec.bed.bases} (row ${rec.bed.row}, column ${rec.bed.col})`
       : bo.count ? `${bo.count} base${bo.count === 1 ? "" : "s"}` : null,
     rec.terrain ? `terrain seed ${rec.terrain.seed}` : null,
     rec.placement_seed != null ? `placement seed ${rec.placement_seed}` : null,
@@ -1520,6 +1656,20 @@ function initBases() {
     "aligned, every raft flat on the plate (z=0). Spacing = clearance " +
     "between units. No splitting or rotating needed.";
   wrap.appendChild(stackNote);
+
+  const bedHead = document.createElement("h3");
+  bedHead.textContent = "Print bed";
+  wrap.appendChild(bedHead);
+  addBaseSliders(wrap, [["bed_count", "Bed bases", 1, 60, 1, ""]]);
+  const bedNote = document.createElement("div");
+  bedNote.className = "row";
+  bedNote.style.fontSize = "11px";
+  bedNote.style.opacity = "0.75";
+  bedNote.textContent =
+    "Print bed spreads that many different bases evenly over the Saturn 4 Ultra " +
+    "16K plate in print orientation (supports on, current settings, Download res), " +
+    "each with its own code, as one 3MF plus a legend.";
+  wrap.appendChild(bedNote);
 
   // STL export resolution — independent of the viewer "Quality". The mesh at
   // this pitch is only ever built at download time, never rendered on screen.
@@ -1591,6 +1741,7 @@ function initBases() {
   $("bases-export").addEventListener("click", () => doExport("stl"));
   $("bases-export3mf").addEventListener("click", () => doExport("3mf"));
   $("bases-sweep").addEventListener("click", exportSupportSweep);
+  $("bases-bed").addEventListener("click", exportBed);
   $("find-go").addEventListener("click", findBase);
   $("find-code").addEventListener("keydown", (e) => { if (e.key === "Enter") findBase(); });
 
