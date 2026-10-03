@@ -454,8 +454,12 @@ function raftLayout() {
   const tf = BASE_OPTS.support_thickness_mm;
   const raftT = Math.max(BASE_OPTS.support_raft_mm, tf + 0.3);
   if (supportUnder()) {
-    const y0 = -BASE_OPTS.perf_gap_mm - tf;
-    return { raftT, cy: y0 + raftT / 2, yMin: y0 };
+    const back = -BASE_OPTS.perf_gap_mm - tf;          // sheet's outer face
+    // start the raft 0.1 mm inside the sheet: flush faces would put raft
+    // and sheet corners on identical points, which position-welding
+    // slicers read as a shared (non-manifold) edge
+    const y0 = back + 0.1;
+    return { raftT, cy: y0 + raftT / 2, yMin: back };
   }
   const cy = Math.min(BASE_OPTS.base_height / 2, tf - 0.1 + raftT / 2);
   return { raftT, cy, yMin: Math.min(0, cy - raftT / 2) };
