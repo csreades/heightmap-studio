@@ -213,7 +213,8 @@ before running. STL needs roughly 3× the memory of 3MF.
 
 `scripts/send_build.py` hands an exported 3MF to a DragonFruit
 build-processor service (`BP_URL`, default `http://192.168.1.60:8010`):
-it wraps the mesh as-is into a VOXL scene with **empty support lists**
+it turns the build 90° on the plate (rafts along the short side; `--rotate`),
+wraps the mesh as-is into a VOXL scene with **empty support lists**
 (the processor's `prepare` step would re-orient it, lift it 5 mm and grow
 its own supports on top of ours), slices it with the server's saved
 settings, stops if the bridge check flags any layer, and uploads the

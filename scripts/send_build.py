@@ -7,6 +7,7 @@ into a DragonFruit VOXL scene with empty support lists, then sliced with the
 server's saved settings and uploaded. Printing is never started.
 
   .venv/bin/python scripts/send_build.py voxl  build.3mf --name NAME   # -> NAME.voxl
+                                       [--rotate 90]  # turn on the plate (default 90)
   .venv/bin/python scripts/send_build.py slice NAME.voxl               # -> slice job id
   .venv/bin/python scripts/send_build.py send  JOB_ID FILE.ctb         # upload, verify
 
@@ -26,6 +27,7 @@ import zlib
 import numpy as np
 
 BP = os.environ.get("BP_URL", "http://192.168.1.60:8010")
+PLATE_MM = (211.68, 118.37)   # Saturn 4 Ultra 16K build area (X, Y)
 
 
 # ------------------------------------------------------------------ 3MF in
@@ -65,11 +67,26 @@ def stl_chunks(V, T, block=1_000_000):
         yield r.tobytes()
 
 
+def rotate_z(V, deg):
+    """Turn the build about the vertical axis. Craig's preferred plate
+    orientation is 90°: the exports lay rafts along X (the plate's long
+    side); turned 90° they run along the short side."""
+    t = np.deg2rad(deg)
+    c, s_ = np.cos(t), np.sin(t)
+    R = V.copy()
+    R[:, 0] = c * V[:, 0] - s_ * V[:, 1]
+    R[:, 1] = s_ * V[:, 0] + c * V[:, 1]
+    return R
+
+
 def write_voxl(V, T, out, name):
     """DragonFruit VOXL v2: META, SCNE, MODL, MESH (zlib binary STL), SUPP.
     The mesh is centred on its bounding box and placed by the model
     transform so its lowest point (the rafts) sits exactly on the plate."""
     lo, hi = V.min(axis=0), V.max(axis=0)
+    if hi[0] - lo[0] > PLATE_MM[0] or hi[1] - lo[1] > PLATE_MM[1]:
+        raise SystemExit(f"build footprint {hi[0]-lo[0]:.1f} x {hi[1]-lo[1]:.1f} mm "
+                         f"doesn't fit the {PLATE_MM[0]} x {PLATE_MM[1]} mm plate")
     centre = (lo + hi) / 2
     Vc = V - centre
     height = float(hi[2] - lo[2])
@@ -201,13 +218,18 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("voxl"); v.add_argument("build"); v.add_argument("--name", required=True)
+    v.add_argument("--rotate", type=float, default=90.0,
+                   help="degrees about the vertical axis (default 90: rafts along the plate's short side)")
     s = sub.add_parser("slice"); s.add_argument("voxl"); s.add_argument("--settings", default="default")
     d = sub.add_parser("send"); d.add_argument("job"); d.add_argument("file")
     a = ap.parse_args()
 
     if a.cmd == "voxl":
         V, T = read_3mf(a.build)
+        if a.rotate % 360:
+            V = rotate_z(V, a.rotate)
         info = write_voxl(V, T, f"{a.name}.voxl", a.name)
+        info["rotated_deg"] = a.rotate
         print(json.dumps(info))
         print("re-read:", json.dumps(check_voxl(f"{a.name}.voxl")))
     elif a.cmd == "slice":
