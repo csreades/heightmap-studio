@@ -188,10 +188,12 @@ server-side (schema version, **generator git commit**, timestamp,
 complete base options, seeds and terrain config). The code is printed
 **raised on the bottom of every base**: six characters, e.g. `K7Q2MR`,
 in one row across the recess floor (about 3.7 mm tall on a Ø25 base, up to
-6 mm on larger ones), standing 0.05 mm short of the foot ring so it never
-touches the table. Raised letters only add material, so they can't thin
-the floor under pin sockets. They need a recess of at least 0.15 mm (a
-hint says when there isn't one), and a dry-brush or wash makes them pop.
+6 mm on larger ones), standing 0.08 mm proud (*Code relief*, about 4
+printer pixels) with the letter faces kept at least 0.05 mm short of the
+foot ring, so they never touch the table. Raised letters only add
+material, so they can't thin the floor under pin sockets. They need a
+recess of at least the relief + 0.05 mm (0.13 mm by default; a hint says
+when there isn't room), and a dry-brush or wash makes them pop.
 
 - **The code**: 5 random characters + 1 check character from Crockford's
   base32 alphabet (digits and capitals without I, L, O, U): ~33.5 M

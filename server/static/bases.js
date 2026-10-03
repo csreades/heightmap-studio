@@ -12,6 +12,7 @@ const BASE_OPTS = {
   pin_depth_mm: 1.4, pin_ring_frac: 0.55, pin_noise: 0.0,
   stack_enabled: false, stack_gap_mm: 2.0,
   mark: "text",          // ID on the bottom: "text" (raised code) | "qr" | "none"
+  text_height_mm: 0.08,  // how far the raised code stands proud (~4 printer px)
   qr_depth_mm: 0.25,     // QR modules debossed into the recess floor
   support_enabled: false, support_height_mm: 2.0,   // tested in the support sweep
   support_thickness_mm: 0.4, support_raft_mm: 2.0,
@@ -275,15 +276,15 @@ function bottomRingRadii(D, ppm, qrOn, d) {
 // ------------------------------------------------------- bottom ID (raised text)
 //
 // The default mark: the export's 6-character code (server/app.py) as raised
-// letters on the recess floor, read from below (not mirrored). They stand
-// TEXT_CLEAR short of the foot ring, so they never touch the table, and
-// being raised they only add material: nothing thins the floor under pin
-// sockets. Letters are DejaVu Sans Mono Bold outlines baked by
+// letters on the recess floor, read from below (not mirrored), standing
+// text_height_mm proud. Their faces stay at least TEXT_CLEAR short of the
+// foot ring, so they never touch the table, and being raised they only add
+// material: nothing thins the floor under pin sockets. Letters are DejaVu Sans Mono Bold outlines baked by
 // scripts/bake_glyphs.py (vendor/glyphs.js) and are joined into the bottom
 // face, so each base stays one closed shell. The viewer shows a placeholder
 // until an export mints the real code.
-const TEXT_CLEAR = 0.05;          // letter faces to the foot-ring plane
-const TEXT_MIN_RECESS = 0.15;     // shallower recesses leave no room
+const TEXT_CLEAR = 0.05;          // min gap, letter faces to the foot-ring plane
+const textMinRecess = () => BASE_OPTS.text_height_mm + TEXT_CLEAR;   // shallower: no room
 const TEXT_PLACEHOLDER = "XXXXXX";
 let activeCode = null;            // the code baked in while an export builds
 
@@ -312,7 +313,7 @@ function cleanRing(pts) {
 // oriented with the letter on its left. null when there's no room.
 function textMarkLayout(D, rd) {
   const G = self.HMS_GLYPHS;
-  if (!G || rd < TEXT_MIN_RECESS - 1e-9) return null;
+  if (!G || rd < textMinRecess() - 1e-9) return null;
   const code = String(activeCode || TEXT_PLACEHOLDER).toUpperCase();
   const pitch = G.advance * 1.1;           // a little tracking: letters never touch
   const hw = (code.length * pitch) / 2;
@@ -359,7 +360,8 @@ function textMarkTris() {
 // Mesh the recess floor with the raised code into buildBaseGeometry's
 // arrays. ring0 is the bottom ring at the floor's edge (SECT vertices);
 // the floor is triangulated around the letters, inside the counters too,
-// and the letters get walls down to their faces at TEXT_CLEAR. Triangles
+// and the letters get walls down to their faces, text_height_mm below the
+// floor. Triangles
 // are pushed in buildBaseGeometry's pre-flip winding (it reverses all of
 // them at the end): clockwise in (x, z) for the down-facing floor and
 // faces. The viewer gives the walls their own vertices for crisp edges.
@@ -374,9 +376,10 @@ function addTextMark(pos, idx, txt, ring0, SECT, rd, weld) {
     if (cr < 0) idx.push(a, b, c);
     else idx.push(a, c, b);
   };
+  const yFace = rd - BASE_OPTS.text_height_mm;
   for (const c of txt.contours) {
     c.floorIds = put(c.pts, rd);
-    c.faceIds = put(c.pts, TEXT_CLEAR);
+    c.faceIds = put(c.pts, yFace);
   }
   // Letters share exactly collinear corners (baselines, cap lines), and
   // earcut then runs edges straight through other corners: T-junctions,
@@ -450,7 +453,7 @@ function addTextMark(pos, idx, txt, ring0, SECT, rd, weld) {
   }
   for (const c of txt.contours) {
     const top = weld ? c.floorIds : put(c.pts, rd);
-    const bot = weld ? c.faceIds : put(c.pts, TEXT_CLEAR);
+    const bot = weld ? c.faceIds : put(c.pts, yFace);
     const n = c.pts.length;
     for (let i = 0; i < n; i++) {
       // letter on the left of p -> q: (p_top, q_top, q_bot) faces outward
@@ -921,7 +924,7 @@ function exportEstimate(bases, ppm) {
     // count depends on the letters)
     const rd = recessDepth();
     t += sect + 2 * sect * bottomRingRadii(D, ppm, BASE_OPTS.mark === "qr", rd).length;
-    if (BASE_OPTS.mark === "text" && rd >= TEXT_MIN_RECESS - 1e-9) t += textMarkTris();
+    if (BASE_OPTS.mark === "text" && rd >= textMinRecess() - 1e-9) t += textMarkTris();
     tris += t;
     maxBase = Math.max(maxBase, t);
   }
@@ -1525,6 +1528,7 @@ function initBases() {
   wrap.appendChild(expHead);
   addSelect(wrap, "mark", "Bottom mark", [
     ["text", "Code (raised letters)"], ["qr", "QR code (debossed)"], ["none", "None"]]);
+  addBaseSliders(wrap, [["text_height_mm", "Code relief", 0.02, 0.5, 0.01, "mm"]]);
   const markNote = document.createElement("div");
   markNote.className = "row";
   markNote.style.fontSize = "11px";
@@ -1533,12 +1537,13 @@ function initBases() {
   updateMarkNote = () => {
     const rd = recessDepth();
     if (BASE_OPTS.mark === "text") {
-      markNote.textContent = rd < TEXT_MIN_RECESS - 1e-9
-        ? `⚠ No code will be printed: raised letters need a bottom recess of at ` +
-          `least ${TEXT_MIN_RECESS} mm (now ${rd.toFixed(2)} mm` +
+      markNote.textContent = rd < textMinRecess() - 1e-9
+        ? `⚠ No code will be printed: ${BASE_OPTS.text_height_mm.toFixed(2)} mm letters need a ` +
+          `bottom recess of at least ${textMinRecess().toFixed(2)} mm (now ${rd.toFixed(2)} mm` +
           (BASE_OPTS.recess_mm > rd + 1e-9 ? ", capped by the pin sockets" : "") + ")."
-        : `Each export's own 6-character code, raised ${(rd - TEXT_CLEAR).toFixed(2)} mm ` +
-          `on the recess floor and ${TEXT_CLEAR} mm short of the foot ring. The viewer ` +
+        : `Each export's own 6-character code, raised ${BASE_OPTS.text_height_mm.toFixed(2)} mm ` +
+          `on the recess floor, ${(rd - BASE_OPTS.text_height_mm).toFixed(2)} mm short of the ` +
+          `foot ring. The viewer ` +
           `shows ${TEXT_PLACEHOLDER}; the real code is baked in at download time. Look ` +
           `codes up below or at ${QR_CANONICAL.replace("https://", "")}/b/CODE.`;
     } else if (BASE_OPTS.mark === "qr") {
