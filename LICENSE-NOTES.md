@@ -8,3 +8,8 @@
   NASA LRO LOLA). They carry no restrictions from this repository.
 - **`server/static/vendor/`** — three.js and OrbitControls are MIT
   licensed, © Three.js Authors; their license headers are preserved.
+- **`server/static/vendor/glyphs.js`** — glyph outlines (32 characters,
+  flattened to polygons by `scripts/bake_glyphs.py`) from DejaVu Sans Mono
+  Bold: Bitstream Vera licence, © 2003 Bitstream, Inc.; DejaVu changes are
+  public domain. The full notice ships as
+  `server/static/vendor/DEJAVU-LICENSE.txt`.

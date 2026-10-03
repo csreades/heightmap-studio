@@ -80,6 +80,8 @@ button.active { background: #3d6fa8; border-color: #3d6fa8; color: #fff; }
   border: 1px solid #35383f; }
 #stamp-download { color: #8fb7e8; font-size: 12px; display: inline-block;
   margin-top: 6px; }
+#find-result { margin: 2px 0 8px; line-height: 1.5; }
+#find-result a { color: #8fb7e8; }
 
 #lib-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .lib-item { cursor: pointer; border: 1px solid #35383f; border-radius: 6px;

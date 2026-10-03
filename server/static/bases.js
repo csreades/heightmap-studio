@@ -11,7 +11,8 @@ const BASE_OPTS = {
   pins_enabled: false, pin_count: 5, pin_diameter_mm: 6.1,
   pin_depth_mm: 1.4, pin_ring_frac: 0.55, pin_noise: 0.0,
   stack_enabled: false, stack_gap_mm: 2.0,
-  qr_enabled: true, qr_depth_mm: 0.25,   // traceability QR debossed in the bottom
+  mark: "text",          // ID on the bottom: "text" (raised code) | "qr" | "none"
+  qr_depth_mm: 0.25,     // QR modules debossed into the recess floor
   support_enabled: false, support_height_mm: 2.0,   // tested in the support sweep
   support_thickness_mm: 0.4, support_raft_mm: 2.0,
   support_perf: true,                     // perforated breakaway (teeth)
@@ -56,6 +57,7 @@ let R3 = null;            // {renderer, scene, camera, controls, group}
 let lastBases = null;
 let updateExportEst = () => {};   // set in initBases; refreshes the size readout
 let updateRecessNote = () => {};  // set in initBases; says when pins cap the recess
+let updateMarkNote = () => {};    // set in initBases; describes the bottom mark
 let basesTimer = null;
 let animating = false;
 
@@ -204,12 +206,13 @@ function basePins(baseIndex, Rt) {
 
 // ------------------------------------------------------- bottom QR deboss
 //
-// The bottom face carries a QR code linking to the complete setup that
-// produced the export (https://limp.csreades.org/b/<guid>). Dark modules
+// Optional mark (mark: "qr"): a QR code linking to the complete setup that
+// produced the export (https://limp.csreades.org/b/<code>). Dark modules
 // are debossed as 45°-chamfered recesses (inverted frustums), so the
 // bottom prints supportless in any orientation; a contrasting wash in the
 // recesses makes it scan. The viewer shows a placeholder QR (site root)
-// until an export mints a real guid.
+// until an export mints a real code. QR_CANONICAL is also the base URL of
+// every record link (/b/<code>), whichever mark is printed.
 const QR_CANONICAL = "https://limp.csreades.org";
 let activeQR = null;   // {size, matrix} used by buildBaseGeometry
 function placeholderQR() {
@@ -267,6 +270,206 @@ function bottomRingRadii(D, ppm, qrOn, d) {
   }
   radii.sort((a, b) => a - b);
   return radii.filter((r, i) => r > 1e-6 && r < Rb - 1e-6 && (i === 0 || r - radii[i - 1] > 1e-6));
+}
+
+// ------------------------------------------------------- bottom ID (raised text)
+//
+// The default mark: the export's 6-character code (server/app.py) as raised
+// letters on the recess floor, read from below (not mirrored). They stand
+// TEXT_CLEAR short of the foot ring, so they never touch the table, and
+// being raised they only add material: nothing thins the floor under pin
+// sockets. Letters are DejaVu Sans Mono Bold outlines baked by
+// scripts/bake_glyphs.py (vendor/glyphs.js) and are joined into the bottom
+// face, so each base stays one closed shell. The viewer shows a placeholder
+// until an export mints the real code.
+const TEXT_CLEAR = 0.05;          // letter faces to the foot-ring plane
+const TEXT_MIN_RECESS = 0.15;     // shallower recesses leave no room
+const TEXT_PLACEHOLDER = "XXXXXX";
+let activeCode = null;            // the code baked in while an export builds
+
+// drop repeated and collinear points: earcut silently skips them, which
+// would leave the floor and the letter walls meeting at T-junctions.
+// Repeats go first, then collinear points one at a time against the
+// current list (judging a stale list could delete a real corner).
+function cleanRing(pts) {
+  const out = pts.filter((p, i) => p.distanceTo(pts[(i + pts.length - 1) % pts.length]) > 1e-4);
+  for (let changed = true; changed && out.length > 3; ) {
+    changed = false;
+    for (let i = 0; i < out.length && out.length > 3; ) {
+      const a = out[(i + out.length - 1) % out.length], p = out[i], b = out[(i + 1) % out.length];
+      if (Math.abs((p.x - a.x) * (b.y - p.y) - (p.y - a.y) * (b.x - p.x)) <= 1e-10) {
+        out.splice(i, 1);
+        changed = true;
+      } else i++;
+    }
+  }
+  return out;
+}
+
+// The code's glyph contours in base-local (x, z) mm: one centred row, cap
+// height as large as the recess floor allows (6 mm max). Each contour knows
+// its nesting: even depth = letter, odd = counter (the hole in an A or a 0),
+// oriented with the letter on its left. null when there's no room.
+function textMarkLayout(D, rd) {
+  const G = self.HMS_GLYPHS;
+  if (!G || rd < TEXT_MIN_RECESS - 1e-9) return null;
+  const code = String(activeCode || TEXT_PLACEHOLDER).toUpperCase();
+  const pitch = G.advance * 1.1;           // a little tracking: letters never touch
+  const hw = (code.length * pitch) / 2;
+  // line box: y from -0.2 (Q's tail) to 1.05 cap heights; with the cap
+  // height centred its farthest corner is (hw, 0.7)
+  const avail = recessInnerRadius(D, rd) - rd - 0.5;    // floor radius less a margin
+  const cap = Math.min(6, avail / Math.hypot(hw, 0.7));
+  if (!(cap >= 1)) return null;            // under 1 mm isn't worth printing
+  const contours = [];
+  [...code].forEach((ch, k) => {
+    const ox = -hw + k * pitch + (pitch - G.advance) / 2;
+    const glyph = (G.chars[ch] || []).map((c) => {
+      const pts = [];
+      for (let i = 0; i < c.length; i += 2)
+        pts.push(new THREE.Vector2((ox + c[i]) * cap, (c[i + 1] - 0.5) * cap));
+      return { pts: cleanRing(pts), children: [] };
+    }).filter((c) => c.pts.length >= 3);
+    for (const c of glyph)
+      c.depth = glyph.filter((o) => o !== c && insidePoly(o.pts, c.pts[0])).length;
+    for (const c of glyph) {
+      c.solid = c.depth % 2 === 0;
+      const parent = glyph.find((o) => o.depth === c.depth - 1 && insidePoly(o.pts, c.pts[0]));
+      if (parent) parent.children.push(c);
+      if ((THREE.ShapeUtils.area(c.pts) > 0) !== c.solid) c.pts.reverse();
+      contours.push(c);
+    }
+  });
+  return { code, cap, contours };
+}
+
+// Upper bound on the triangles the raised code adds (export estimate):
+// walls 2 per outline point, letter faces and floor about 1 each.
+function textMarkTris() {
+  const G = self.HMS_GLYPHS;
+  if (!G) return 0;
+  if (!textMarkTris.n) {
+    const most = Math.max(...Object.values(G.chars).map(
+      (cs) => cs.reduce((s, c) => s + c.length / 2 + 2, 0)));
+    textMarkTris.n = 6 * 4 * most;
+  }
+  return textMarkTris.n;
+}
+
+// Mesh the recess floor with the raised code into buildBaseGeometry's
+// arrays. ring0 is the bottom ring at the floor's edge (SECT vertices);
+// the floor is triangulated around the letters, inside the counters too,
+// and the letters get walls down to their faces at TEXT_CLEAR. Triangles
+// are pushed in buildBaseGeometry's pre-flip winding (it reverses all of
+// them at the end): clockwise in (x, z) for the down-facing floor and
+// faces. The viewer gives the walls their own vertices for crisp edges.
+function addTextMark(pos, idx, txt, ring0, SECT, rd, weld) {
+  const put = (pts, y) => pts.map((p) => {
+    pos.push(p.x, y, p.y);
+    return pos.length / 3 - 1;
+  });
+  const down = (a, b, c) => {         // push facing -y (after the final flip)
+    const ax = pos[a * 3], az = pos[a * 3 + 2];
+    const cr = (pos[b * 3] - ax) * (pos[c * 3 + 2] - az) - (pos[b * 3 + 2] - az) * (pos[c * 3] - ax);
+    if (cr < 0) idx.push(a, b, c);
+    else idx.push(a, c, b);
+  };
+  for (const c of txt.contours) {
+    c.floorIds = put(c.pts, rd);
+    c.faceIds = put(c.pts, TEXT_CLEAR);
+  }
+  // Letters share exactly collinear corners (baselines, cap lines), and
+  // earcut then runs edges straight through other corners: T-junctions,
+  // closed to the eye but open by index. Split such triangles at those
+  // corners so neighbours meet vertex for vertex. (Nudging the corners
+  // apart instead would be undone by the 3MF's 1 µm rounding.) With the
+  // ring as outer boundary its vertices are skipped: no edge can pass
+  // through them.
+  const fill = (outer, outerIds, holes, holeIds, ringOuter) => {
+    const pts = outer.concat(...holes), ids = outerIds.concat(...holeIds);
+    const first = ringOuter ? outer.length : 0;
+    const onEdge = (i, j) => {          // a corner strictly inside edge i-j
+      if (i < first && j < first) return -1;
+      const a = pts[i], ex = pts[j].x - a.x, ey = pts[j].y - a.y, L2 = ex * ex + ey * ey;
+      for (let m = first; m < pts.length; m++) {
+        if (m === i || m === j) continue;
+        const px = pts[m].x - a.x, py = pts[m].y - a.y, t = px * ex + py * ey;
+        if (t <= 1e-12 * L2 || t >= (1 - 1e-12) * L2) continue;
+        const cr = ex * py - ey * px;
+        if (cr * cr <= 1e-14 * L2) return m;     // within 0.1 nm of the line
+      }
+      return -1;
+    };
+    const emit = (a, b, c) => {
+      for (const [i, j, k] of [[a, b, c], [b, c, a], [c, a, b]]) {
+        const m = onEdge(i, j);
+        if (m >= 0) { emit(i, m, k); emit(m, j, k); return; }
+      }
+      down(ids[a], ids[b], ids[c]);
+    };
+    for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(outer, holes)) emit(a, b, c);
+  };
+  // The floor: a coarse ring 0.25 mm inside the edge ring (the letters stay
+  // 0.5 mm inside it), zipped to the edge ring, then triangulated around the
+  // letters. Earcut straight on the fine edge ring would clip ears of three
+  // consecutive ring vertices: slivers whose ~0.01 um sagitta the 3MF's
+  // 1 um rounding flattens or flips. The coarse ring's sagitta is ~5 um.
+  const ring = [];
+  for (let j = 0; j < SECT; j++) {
+    const k = (ring0 + j) * 3;
+    ring.push(new THREE.Vector2(pos[k], pos[k + 2]));
+  }
+  // viewer: the floor's own copy of the ring, so the recess wall's normals
+  // don't smear into it (uneven fans along the ring shade as dashes)
+  const ringIds = weld ? ring.map((_, j) => ring0 + j) : put(ring, rd);
+  const ri = ring[0].length() - 0.25;
+  const M = Math.min(SECT, Math.max(24, Math.floor(Math.PI * Math.sqrt(ri / 0.01))));
+  const inner = [];
+  for (let i = 0; i < M; i++) {
+    const a = (i / M) * Math.PI * 2;
+    inner.push(new THREE.Vector2(ri * Math.cos(a), ri * Math.sin(a)));
+  }
+  const innerIds = put(inner, rd);
+  for (let i = 0, j = 0; i < M || j < SECT; ) {    // zip by angle; both start at 0
+    if (j < SECT && (i >= M || (j + 1) * M <= (i + 1) * SECT)) {
+      down(ringIds[j], ringIds[(j + 1) % SECT], innerIds[i % M]);
+      j++;
+    } else {
+      down(ringIds[j % SECT], innerIds[(i + 1) % M], innerIds[i]);
+      i++;
+    }
+  }
+  const outerLetters = txt.contours.filter((c) => c.depth === 0);
+  fill(inner, innerIds, outerLetters.map((c) => c.pts), outerLetters.map((c) => c.floorIds), true);
+  for (const c of txt.contours) {
+    const kids = c.children;
+    if (c.solid)   // letter face, with its counters cut out
+      fill(c.pts, c.faceIds, kids.map((o) => o.pts), kids.map((o) => o.faceIds));
+    else           // floor inside a counter, around any letter part in it (the 0's dot)
+      fill(c.pts, c.floorIds, kids.map((o) => o.pts), kids.map((o) => o.floorIds));
+  }
+  for (const c of txt.contours) {
+    const top = weld ? c.floorIds : put(c.pts, rd);
+    const bot = weld ? c.faceIds : put(c.pts, TEXT_CLEAR);
+    const n = c.pts.length;
+    for (let i = 0; i < n; i++) {
+      // letter on the left of p -> q: (p_top, q_top, q_bot) faces outward
+      const j = (i + 1) % n;
+      idx.push(top[i], bot[j], top[j], top[i], bot[i], bot[j]);
+    }
+  }
+}
+
+// Records saved before the mark option had qr_enabled (always true in
+// practice): map it onto mark, so restoring an old record rebuilds exactly
+// what was printed (its QR), and drop the stale key.
+function migrateBaseOpts(bo) {
+  const o = { ...(bo || {}) };
+  if ("qr_enabled" in o) {
+    if (!("mark" in o)) o.mark = o.qr_enabled ? "qr" : "none";
+    delete o.qr_enabled;
+  }
+  return o;
 }
 
 function buildBaseGeometry(base, baseIndex, exOverride, caps, weld) {
@@ -354,17 +557,19 @@ function buildBaseGeometry(base, baseIndex, exOverride, caps, weld) {
   }
   // bottom: flat fan normally; with QR and/or recess, rings at the QR grid
   // (dense enough for the debossed modules) and at the recess wall edges,
-  // then out to the rim. QR depth is measured from the recess floor.
-  const qr = BASE_OPTS.qr_enabled ? (activeQR || placeholderQR()) : null;
+  // then out to the rim. QR depth is measured from the recess floor. The
+  // raised code replaces the centre fan with a floor meshed around it.
+  const qr = BASE_OPTS.mark === "qr" ? (activeQR || placeholderQR()) : null;
   const qrSide = 0.62 * D;
   const qrDepth = BASE_OPTS.qr_depth_mm;
   const rd = recessDepth();
   const rIn = recessInnerRadius(D, rd);
+  const txt = BASE_OPTS.mark === "text" ? textMarkLayout(D, rd) : null;
   const botY = (x, z) => Math.min(rd, Math.max(0, rIn - Math.hypot(x, z)))
     + (qr ? qrDepthAt(x, z, qr, qrSide, qrDepth) : 0);
   let botRings = [];                 // vertex index of each bottom ring
   const botCenter = pos.length / 3;
-  pos.push(0, botY(0, 0), 0);
+  if (!txt) pos.push(0, botY(0, 0), 0);
   for (const r of bottomRingRadii(D, ppm, !!qr, rd)) {
     botRings.push(pos.length / 3);
     for (let j = 0; j < SECT; j++) {
@@ -390,7 +595,8 @@ function buildBaseGeometry(base, baseIndex, exOverride, caps, weld) {
     idx.push(wallTop + j, wallBot + j, wallBot + j1,
              wallTop + j, wallBot + j1, wallTop + j1);
   }
-  for (let j = 0; j < SECT; j++)                        // bottom center fan
+  if (txt) addTextMark(pos, idx, txt, botRings[0], SECT, rd, weld);
+  else for (let j = 0; j < SECT; j++)                   // bottom center fan
     idx.push(botCenter, botRings[0] + ((j + 1) % SECT), botRings[0] + j);
   for (let i = 0; i < botRings.length - 1; i++) {       // bottom ring quads
     const b0 = botRings[i], b1 = botRings[i + 1];
@@ -656,6 +862,7 @@ function rebuildMeshes() {
   $("bases-stats").innerHTML = stats;
   updateExportEst();
   updateRecessNote();
+  updateMarkNote();
 }
 
 // ---------------------------------------------------------------- STL export
@@ -709,8 +916,12 @@ function exportEstimate(bases, ppm) {
     const rings = Math.min(Math.max(Math.round(Rb * ppm * 1.2), 32), 8192);
     const sect = Math.min(Math.max(Math.round(Math.PI * D * ppm * 1.2), 96), 32768);
     let t = sect + 2 * sect * (rings - 1) + 2 * sect;          // top + wall
-    // bottom: centre fan + one quad band per ring (QR grid, recess wall)
-    t += sect + 2 * sect * bottomRingRadii(D, ppm, BASE_OPTS.qr_enabled, recessDepth()).length;
+    // bottom: centre fan + one quad band per ring (QR grid, recess wall);
+    // the raised code adds a few hundred (an upper bound: earcut's exact
+    // count depends on the letters)
+    const rd = recessDepth();
+    t += sect + 2 * sect * bottomRingRadii(D, ppm, BASE_OPTS.mark === "qr", rd).length;
+    if (BASE_OPTS.mark === "text" && rd >= TEXT_MIN_RECESS - 1e-9) t += textMarkTris();
     tris += t;
     maxBase = Math.max(maxBase, t);
   }
@@ -753,7 +964,7 @@ async function doExport(kind) {
     alert("High-res render failed (server busy or restarted) — try again.");
     return;
   }
-  // mint the export record FIRST so its guid can be baked into the QR
+  // mint the export record FIRST so its code can be baked into the mark
   const placeSeed0 = parseInt($("bases-seed").value) || 1;
   const record = {
     base_opts: { ...BASE_OPTS },
@@ -763,11 +974,12 @@ async function doExport(kind) {
   let guid = null, minted = null;
   if (window.__reuse_guid) {
     // re-export of an existing record (scripts/reexport.py): keep the
-    // original guid so the QR, filename and /b/ link stay unchanged
+    // original code so the mark, filename and /b/ link stay unchanged
     guid = window.__reuse_guid;
     try {
-      const r = await fetch(`/api/exports/${guid}`);
+      const r = await fetch(`/api/exports/${encodeURIComponent(guid)}`);
       const rec = await r.json();
+      if (rec.guid) guid = rec.guid;      // canonical form of a typed code
       minted = { guid, schema: rec.schema,
                  generator_commit: rec.current_generator_commit };
     } catch (e) { minted = { guid, schema: 1, generator_commit: "reexport" }; }
@@ -777,18 +989,20 @@ async function doExport(kind) {
       body: JSON.stringify(record),
     });
     if (r.ok) { minted = await r.json(); guid = minted.guid; }
-  } catch (e) { /* offline: export continues with placeholder QR */ }
+  } catch (e) { /* offline: export continues with the placeholder mark */ }
 
   btn.textContent = "Building mesh…";
   btn.disabled = true;
   // yield one frame so the label paints before the heavy synchronous meshing
   await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
   try {
-    activeQR = guid ? qrEncode(`${QR_CANONICAL}/b/${guid}`) : null;
+    activeQR = guid && BASE_OPTS.mark === "qr" ? qrEncode(`${QR_CANONICAL}/b/${guid}`) : null;
+    activeCode = guid;
     if (kind === "3mf") await export3MFGeos(hbases, record, minted);
     else exportSTLGeos(hbases, record, guid);
   } finally {
     activeQR = null;
+    activeCode = null;
     btn.disabled = false;
     btn.textContent = label0;
   }
@@ -883,7 +1097,8 @@ async function export3MFGeos(hbases, record, minted) {
 // height, not part count, so the extra bases only cost resin. Columns
 // step the contact width down; row A uses the default tooth spacing and
 // row B a sparser one; A0 is the old solid weld as a control. Every base
-// gets its own export record, so its QR code names its exact variant.
+// gets its own export record, so the code on its bottom names its exact
+// variant.
 const SWEEP_WIDTHS = [1.0, 0.7, 0.5, 0.35, 0.25, 0.15];   // sure -> likely fail
 const SWEEP_ROWS = [   // [row, tooth spacing, teeth under the base?]
   ["A", 2.5, false], ["B", 4.0, false], ["C", 2.5, true]];
@@ -918,17 +1133,18 @@ function sweepLegend(id, variants, base, ppm, placement) {
     `  A1-A6  teeth on the rim every 2.5 mm, contact width ${SWEEP_WIDTHS.join(" / ")} mm`,
     "  B1-B6  same widths, teeth every 4 mm (sparser)",
     "  C1-C6  same widths every 2.5 mm, teeth UNDER the base (sand the bottom flat)",
-    "Left to right is sure thing -> likely failure. Every base's bottom QR",
-    "links to its exact settings; mark them with a pen as they come off.",
+    "Left to right is sure thing -> likely failure. The code on each base's",
+    "bottom (the last column) leads to its exact settings, so the bases can",
+    "be told apart after they come off.",
     "",
-    row(["base", "support", "width", "spacing", "teeth", "contact"]) + "record",
+    row(["base", "support", "width", "spacing", "teeth", "contact"]) + "code   record",
   ];
   for (const v of variants) {
     lines.push(row([
       v.label, !v.perf ? "solid weld" : v.under ? "under base" : "rim teeth",
       v.perf ? `${v.contact} mm` : "-", v.perf ? `${v.pitch} mm` : "-",
       v.perf ? v.teeth : "-", `${area(v).toFixed(2)} mm2`,
-    ]) + `${QR_CANONICAL}/b/${v.guid}`);
+    ]) + `${v.guid.padEnd(7)}${QR_CANONICAL}/b/${v.guid}`);
   }
   lines.push("",
     "Reading it: the best setting is usually the narrowest contact that held",
@@ -989,7 +1205,8 @@ async function exportSupportSweep() {
     try {
       for (const v of variants) {
         Object.assign(BASE_OPTS, v.opts);
-        activeQR = qrEncode(`${QR_CANONICAL}/b/${v.guid}`);
+        activeQR = BASE_OPTS.mark === "qr" ? qrEncode(`${QR_CANONICAL}/b/${v.guid}`) : null;
+        activeCode = v.guid;
         // print orientation (disc on edge, raft on the plate), laid out on
         // a grid: row -> along the raft length, column -> along the rack
         const zTop = base.diameter / 2 + BASE_OPTS.support_height_mm;
@@ -1003,6 +1220,7 @@ async function exportSupportSweep() {
     } finally {
       Object.assign(BASE_OPTS, saved);
       activeQR = null;
+      activeCode = null;
     }
     const chunks = await build3MF(meshes, {
       Application: "Battlefield Heightmap Studio",
@@ -1131,6 +1349,7 @@ async function refreshBasesPresets() {
 
 const basesRows = [];       // {key, row} for config-load resync
 const basesChecks = {};     // key -> checkbox element
+const basesSelects = {};    // key -> select element
 
 // Rebuilding every base mesh is heavy (seconds at high quality); dragging a
 // slider fires input events continuously, so debounce local rebuilds — only
@@ -1172,9 +1391,80 @@ function addToggle(wrap, key, label) {
   wrap.appendChild(row);
 }
 
+function addSelect(wrap, key, label, options) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const lab = document.createElement("label");
+  lab.textContent = label;
+  const sel = document.createElement("select");
+  for (const [value, text] of options) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = text;
+    sel.appendChild(o);
+  }
+  sel.value = BASE_OPTS[key];
+  sel.addEventListener("change", () => {
+    BASE_OPTS[key] = sel.value;
+    updateMarkNote();
+    scheduleMeshes();
+  });
+  row.append(lab, sel);
+  basesSelects[key] = sel;
+  wrap.appendChild(row);
+}
+
 function syncBaseControls() {
   for (const { key, row } of basesRows) row._sync(BASE_OPTS[key]);
   for (const [key, chk] of Object.entries(basesChecks)) chk.checked = !!BASE_OPTS[key];
+  for (const [key, sel] of Object.entries(basesSelects)) sel.value = BASE_OPTS[key];
+  updateMarkNote();
+}
+
+// "Find a base": look up the code read off a base bottom (or a pasted
+// /b/ link) and offer its record page and a restore. The server does the
+// forgiving parse and the check character. Records are client-supplied,
+// so everything shown goes in as text, never markup.
+async function findBase() {
+  const out = $("find-result");
+  const raw = $("find-code").value.trim()
+    .replace(/^.*(\/b\/|restore=)/, "").replace(/[/?#&].*$/, "");
+  if (!raw) return;
+  out.hidden = false;
+  out.textContent = "Looking up…";
+  let rec;
+  try {
+    const r = await fetch(`/api/exports/${encodeURIComponent(raw)}`);
+    rec = await r.json();
+    if (!r.ok) {
+      out.textContent = typeof rec.detail === "string" ? rec.detail : `Lookup failed (HTTP ${r.status}).`;
+      return;
+    }
+  } catch (e) {
+    out.textContent = "Lookup failed: the server didn't answer.";
+    return;
+  }
+  const bo = rec.base_opts || {};
+  const facts = [
+    rec.ts ? `exported ${String(rec.ts).replace("T", " ").replace("+00:00", " UTC")}` : null,
+    rec.sweep ? `support sweep base ${rec.sweep.label}`
+      : bo.count ? `${bo.count} base${bo.count === 1 ? "" : "s"}` : null,
+    rec.terrain ? `terrain seed ${rec.terrain.seed}` : null,
+    rec.placement_seed != null ? `placement seed ${rec.placement_seed}` : null,
+    rec.reproducible_exactly ? null : `made by an older version (${rec.generator_commit})`,
+  ].filter(Boolean);
+  const head = document.createElement("b");
+  head.textContent = rec.guid;
+  const link = (href, text, newTab) => {
+    const a = document.createElement("a");
+    a.href = href;
+    a.textContent = text;
+    if (newTab) a.target = "_blank";
+    return a;
+  };
+  out.replaceChildren(head, ` · ${facts.join(" · ")} · `,
+    link(`/b/${encodeURIComponent(rec.guid)}`, "record", true), " · ",
+    link(`/?restore=${encodeURIComponent(rec.guid)}`, "restore this setup"));
 }
 
 function initBases() {
@@ -1233,16 +1523,34 @@ function initBases() {
   const expHead = document.createElement("h3");
   expHead.textContent = "STL export";
   wrap.appendChild(expHead);
-  addToggle(wrap, "qr_enabled", "QR code on bottom (links to this setup)");
-  const qrNote = document.createElement("div");
-  qrNote.className = "row";
-  qrNote.style.fontSize = "11px";
-  qrNote.style.opacity = "0.75";
-  qrNote.textContent =
-    "Debossed 45°-chamfered modules, 0.25 mm deep — prints supportless; " +
-    "add a contrasting wash to scan. Viewer shows a placeholder; the real " +
-    "per-export link is baked in at download time.";
-  wrap.appendChild(qrNote);
+  addSelect(wrap, "mark", "Bottom mark", [
+    ["text", "Code (raised letters)"], ["qr", "QR code (debossed)"], ["none", "None"]]);
+  const markNote = document.createElement("div");
+  markNote.className = "row";
+  markNote.style.fontSize = "11px";
+  markNote.style.opacity = "0.75";
+  wrap.appendChild(markNote);
+  updateMarkNote = () => {
+    const rd = recessDepth();
+    if (BASE_OPTS.mark === "text") {
+      markNote.textContent = rd < TEXT_MIN_RECESS - 1e-9
+        ? `⚠ No code will be printed: raised letters need a bottom recess of at ` +
+          `least ${TEXT_MIN_RECESS} mm (now ${rd.toFixed(2)} mm` +
+          (BASE_OPTS.recess_mm > rd + 1e-9 ? ", capped by the pin sockets" : "") + ")."
+        : `Each export's own 6-character code, raised ${(rd - TEXT_CLEAR).toFixed(2)} mm ` +
+          `on the recess floor and ${TEXT_CLEAR} mm short of the foot ring. The viewer ` +
+          `shows ${TEXT_PLACEHOLDER}; the real code is baked in at download time. Look ` +
+          `codes up below or at ${QR_CANONICAL.replace("https://", "")}/b/CODE.`;
+    } else if (BASE_OPTS.mark === "qr") {
+      markNote.textContent =
+        `Debossed 45°-chamfered modules, ${BASE_OPTS.qr_depth_mm} mm deep — prints ` +
+        "supportless; add a contrasting wash to scan. Viewer shows a placeholder; " +
+        "the real per-export link is baked in at download time.";
+    } else {
+      markNote.textContent = "No mark. Each export still gets a record; its code is in the file name.";
+    }
+  };
+  updateMarkNote();
   const expNote = document.createElement("div");
   expNote.className = "row";
   expNote.style.fontSize = "11px";
@@ -1278,6 +1586,8 @@ function initBases() {
   $("bases-export").addEventListener("click", () => doExport("stl"));
   $("bases-export3mf").addEventListener("click", () => doExport("3mf"));
   $("bases-sweep").addEventListener("click", exportSupportSweep);
+  $("find-go").addEventListener("click", findBase);
+  $("find-code").addEventListener("keydown", (e) => { if (e.key === "Enter") findBase(); });
 
   refreshBasesPresets();
   $("bases-preset-save").addEventListener("click", async () => {
@@ -1299,7 +1609,7 @@ function initBases() {
     const res = await fetch(`/api/bases_presets/${encodeURIComponent(name)}`);
     if (!res.ok) return;
     const data = await res.json();
-    Object.assign(BASE_OPTS, data.base_opts || {});
+    Object.assign(BASE_OPTS, migrateBaseOpts(data.base_opts));
     $("bases-seed").value = data.placement_seed;
     syncBaseControls();
     // apply the embedded terrain config to the whole app (map included)

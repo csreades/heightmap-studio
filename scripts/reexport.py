@@ -1,18 +1,19 @@
-"""Re-export stored setups by guid, headless — no browser-driving needed.
+"""Re-export stored setups by code, headless — no browser-driving needed.
 
-Loads each export record via /?restore=<guid>, reuses the ORIGINAL guid
-(QR, filename and /b/ link stay unchanged) and saves the regenerated
+Loads each export record via /?restore=<code>, reuses the ORIGINAL code
+(mark, filename and /b/ link stay unchanged) and saves the regenerated
 3MF/STL into exports/files/ where the server serves them at
 /exports_files/. Writes an index.html link list there too.
 
 Usage:
-  .venv/bin/python scripts/reexport.py GUID [GUID ...]
+  .venv/bin/python scripts/reexport.py CODE [CODE ...]
   .venv/bin/python scripts/reexport.py --all          # every record on disk
-  .venv/bin/python scripts/reexport.py --format stl GUID ...
-  .venv/bin/python scripts/reexport.py --sweep GUID   # support sweep of that design
+  .venv/bin/python scripts/reexport.py --format stl CODE ...
+  .venv/bin/python scripts/reexport.py --sweep CODE   # support sweep of that design
 
---sweep runs the Support sweep on each stored design instead: 13 test bases
-with fresh records of their own, saved as <design guid>_support_sweep_*.
+CODE is a 6-character base code or a legacy 12-hex guid.
+--sweep runs the Support sweep on each stored design instead: 19 test bases
+with fresh records of their own, saved as <design code>_support_sweep_*.
 """
 import argparse
 import glob
@@ -21,6 +22,7 @@ import json
 import os
 import sys
 import time
+from urllib.parse import quote
 
 from playwright.sync_api import sync_playwright
 
@@ -30,11 +32,11 @@ BASE_URL = os.environ.get("HMS_URL", "http://127.0.0.1:8000")
 
 
 def reexport(pg, guid: str, fmt: str, sweep: bool = False) -> list[str]:
-    pg.goto(f"{BASE_URL}/?restore={guid}", timeout=60000)
+    pg.goto(f"{BASE_URL}/?restore={quote(guid)}", timeout=60000)
     pg.wait_for_load_state("networkidle", timeout=120000)
     pg.wait_for_timeout(1500)
-    if not sweep:   # a sweep mints its own records; plain re-exports keep the guid
-        pg.evaluate(f"window.__reuse_guid = '{guid}'")
+    if not sweep:   # a sweep mints its own records; plain re-exports keep the code
+        pg.evaluate("g => { window.__reuse_guid = g; }", guid)
     pg.get_by_text("Bases", exact=False).first.click()
     # wait for the preview fetch so state is fully wired
     pg.wait_for_function("() => lastBases !== null", timeout=180000)

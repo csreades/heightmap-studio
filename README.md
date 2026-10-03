@@ -122,8 +122,8 @@ Base geometry (defaults tuned for Legions Imperialis):
 - **Recessed bottom (foot ring)** — the underside is recessed 0.2 mm
   inside a flat 1.5 mm outer foot ring (45° walls, supportless on edge),
   so the base stands on its rim: it sits level on small bumps and a
-  slightly bowed print can't rock. The QR code is debossed into the recess
-  floor, where it never rubs on the table. With pins on, the recess is
+  slightly bowed print can't rock. The base's ID code stands raised on the
+  recess floor, where it never rubs on the table. With pins on, the recess is
   capped so the socket floors keep ≥ 0.6 mm of material under them (a hint
   appears when that kicks in); without pins it can go to 1 mm.
 - **Pin sockets (subtracted)** — N flat-floored holes on an equidistant
@@ -160,8 +160,8 @@ Base geometry (defaults tuned for Legions Imperialis):
     a single print: a solid-weld control, then contact widths 1.0 → 0.15 mm
     with rim teeth every 2.5 mm (row A), every 4 mm (row B), and with teeth
     under the base every 2.5 mm (row C).
-    Each base gets its own export record and QR code, and a legend (`.txt`)
-    downloads with the 3MF. Resin print time depends on height, not part
+    Each base gets its own export record and code, and a legend (`.txt`)
+    mapping codes to variants downloads with the 3MF. Resin print time depends on height, not part
     count, so the extra bases only cost resin; terrain resolution is capped
     at 16 px/mm for the sweep since it doesn't affect support behaviour.
 
@@ -181,26 +181,45 @@ Base geometry (defaults tuned for Legions Imperialis):
   units, Z-up, watertight shells, relief at true 1× regardless of the view
   exaggeration.
 
-### Traceability: QR on every base + versioned export records
+### Traceability: a code on every base + versioned export records
 
-Every export mints a **guid** and stores a versioned record server-side
-(schema version, **generator git commit**, timestamp, complete base
-options, seeds and terrain config). Each base gets a **QR code debossed
-into its bottom face** — 45°-chamfered 0.25 mm recesses, printable
-supportless in any orientation; a contrasting wash makes it scan —
-linking to `/b/<guid>`: a page showing the complete setup that produced
-that physical base, with an **"Open in the studio"** button that restores
-the whole thing live (`/?restore=<guid>`). If the generator has changed
-since the export, the page and the restore flow warn that the same seed
-may no longer produce identical terrain.
+Every export mints a short **base code** and stores a versioned record
+server-side (schema version, **generator git commit**, timestamp,
+complete base options, seeds and terrain config). The code is printed
+**raised on the bottom of every base**: six characters, e.g. `K7Q2MR`,
+in one row across the recess floor (about 3.7 mm tall on a Ø25 base, up to
+6 mm on larger ones), standing 0.05 mm short of the foot ring so it never
+touches the table. Raised letters only add material, so they can't thin
+the floor under pin sockets. They need a recess of at least 0.15 mm (a
+hint says when there isn't one), and a dry-brush or wash makes them pop.
 
-The record travels four ways: the QR link, the STL's 80-byte header
-(compact summary), a `.params.json` sidecar downloaded next to the STL,
-and `exports.jsonl` on the server. The QR encoder is vendored (no CDN),
-byte-mode v1–3 ECC-M, verified matrix-for-matrix against the reference
-python implementation.
+- **The code**: 5 random characters + 1 check character from Crockford's
+  base32 alphabet (digits and capitals without I, L, O, U): ~33.5 M
+  codes. Reading is forgiving — lowercase is fine, O reads as 0, I and L
+  as 1, spaces and hyphens are ignored — and the check character catches
+  any single misread character, so a misread never opens the wrong record.
+- **Look it up** with the **Find a base** box in the Bases tab, or at
+  `/b/<code>`: a page showing the complete setup that produced that
+  physical base, with an **"Open in the studio"** button that restores the
+  whole thing live (`/?restore=<code>`). If the generator has changed
+  since the export, the page and the restore flow warn that the same seed
+  may no longer produce identical terrain.
+- **Other marks**: *Bottom mark* can switch to a **QR code** debossed into
+  the recess floor (45°-chamfered 0.25 mm modules, supportless in any
+  orientation; a contrasting wash makes it scan) or to none. Records made
+  before codes (schema 1) keep their 12-hex guids, which still work
+  everywhere, and restore with the QR they were printed with.
 
-Records are what keep printed QR codes alive, so `scripts/backup_records.sh`
+The record travels four ways: the code (and `/b/` link), the STL's
+80-byte header (compact summary), a `.params.json` sidecar downloaded
+next to the STL, and `exports.jsonl` on the server. The letters are
+DejaVu Sans Mono Bold outlines baked into a small table by
+`scripts/bake_glyphs.py` and meshed into the bottom face, so each base
+stays one closed shell; the QR encoder is vendored too (no CDN), byte-mode
+v1–3 ECC-M, verified matrix-for-matrix against the reference python
+implementation.
+
+Records are what keep printed codes alive, so `scripts/backup_records.sh`
 mirrors them (plus saved presets) into a private git repo, committing only
 when something changed and never deleting; `deploy/` has a systemd timer
 that runs it every 15 minutes. Records are client-supplied: the server
@@ -384,6 +403,8 @@ never use LOD and are always exact.
   use, modify and share for any noncommercial purpose.
 - **`library/`** — sourced heightmaps remain CC0 1.0 / public domain, as
   recorded per-entry in each `metadata.json`.
-- **`server/static/vendor/`** — three.js and OrbitControls, MIT licensed.
+- **`server/static/vendor/`** — three.js and OrbitControls, MIT licensed;
+  `glyphs.js` holds outlines from DejaVu Sans Mono Bold (Bitstream Vera
+  licence, `DEJAVU-LICENSE.txt`).
 
 See [LICENSE-NOTES.md](LICENSE-NOTES.md) for the breakdown.

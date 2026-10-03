@@ -251,14 +251,18 @@ def post_bases(body: BasesIn):
 
 # ------------------------------------------------------------------ export log
 #
-# Every export gets a guid + versioned record (exports/<guid>.json and a
+# Every export gets an ID + versioned record (exports/<id>.json and a
 # line in exports.jsonl). The record pins schema version AND the generator
 # git commit: determinism only holds for the same code, so a record is only
-# exactly reproducible on the commit that produced it. QR codes on base
-# bottoms encode <host>/b/<guid>, which stays a stable, version-free route;
+# exactly reproducible on the commit that produced it. The mark on a base
+# bottom names <host>/b/<id>, which stays a stable, version-free route;
 # all versioning lives in the record itself.
+#
+# Schema 2: the ID is a 6-character base code (below) and base_opts.mark
+# ("text" | "qr" | "none") replaces qr_enabled. Schema 1 records keep their
+# 12-hex guids, which stay valid everywhere.
 
-EXPORT_SCHEMA = 1
+EXPORT_SCHEMA = 2
 EXPORT_LOG = os.path.join(ROOT, "exports.jsonl")
 EXPORTS_DIR = os.path.join(ROOT, "exports")
 _export_log_lock = threading.Lock()
@@ -277,7 +281,48 @@ def _git_commit() -> str:
 
 
 APP_COMMIT = _git_commit()
-_GUID_RE = re.compile(r"^[0-9a-f]{12}$")
+
+# Base codes: 5 random Crockford base32 characters + 1 Luhn mod 32 check
+# character, ~33.5 M codes, printed as raised text on the base bottom.
+# Crockford's alphabet has no I, L, O or U, and reading is forgiving:
+# lowercase is fine, O reads as 0, I and L as 1, spaces and hyphens are
+# ignored. The check character catches any single misread character and
+# most swapped neighbours, so a misread never opens the wrong record.
+CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_CODE_VALUE = {c: i for i, c in enumerate(CODE_ALPHABET)}
+_CODE_READS = str.maketrans("OIL", "011")
+_LEGACY_ID_RE = re.compile(r"^[0-9a-f]{12}$")      # schema 1 guids
+
+
+def _luhn32(body: str) -> str:
+    """Luhn mod 32 check character for `body` (CODE_ALPHABET characters)."""
+    total, factor = 0, 2
+    for ch in reversed(body):
+        a = factor * _CODE_VALUE[ch]
+        total += a // 32 + a % 32
+        factor = 3 - factor
+    return CODE_ALPHABET[-total % 32]
+
+
+def _random_code() -> str:
+    import secrets
+    body = "".join(secrets.choice(CODE_ALPHABET) for _ in range(5))
+    return body + _luhn32(body)
+
+
+def _resolve_id(raw: str) -> str:
+    """Canonical record ID for a code as typed (or a legacy guid)."""
+    s = raw.strip()
+    if _LEGACY_ID_RE.match(s.lower()):
+        return s.lower()
+    code = re.sub(r"[\s-]", "", s).upper().translate(_CODE_READS)
+    if len(code) != 6 or any(c not in _CODE_VALUE for c in code):
+        raise HTTPException(400, "not a base code: codes are 6 characters, "
+                                 "digits and letters (no I, L, O or U)")
+    if _luhn32(code[:5]) != code[5]:
+        raise HTTPException(400, f"{code} isn't a valid code: one character "
+                                 "is probably misread")
+    return code
 
 
 MAX_RECORD_BYTES = 256 * 1024      # a real record is ~5 KB
@@ -288,8 +333,8 @@ _SERVER_FIELDS = {"schema", "guid", "generator_commit", "ts",
 @app.post("/api/log_export")
 async def log_export(request: Request):
     """Store one versioned record per export (full base options, seeds,
-    terrain config) under a fresh guid; returns the guid so the client can
-    bake <host>/b/<guid> into the exported geometry as a QR code."""
+    terrain config) under a fresh base code; returns it (as "guid") so the
+    client can bake it into the exported geometry."""
     raw = bytearray()
     async for chunk in request.stream():
         raw += chunk
@@ -301,17 +346,23 @@ async def log_export(request: Request):
         raise HTTPException(400, "export record must be JSON")
     if not isinstance(body, dict):
         raise HTTPException(400, "export record must be a JSON object")
-    import secrets
-    guid = secrets.token_hex(6)   # 12 hex chars -> QR stays at version 3
     # server-owned fields can't be supplied (or overridden) by the client
-    entry = {"schema": EXPORT_SCHEMA, "guid": guid,
+    entry = {"schema": EXPORT_SCHEMA, "guid": None,
              "generator_commit": APP_COMMIT,
              "ts": datetime.datetime.now(datetime.timezone.utc)
                    .isoformat(timespec="seconds")}
     entry.update((k, v) for k, v in body.items() if k not in _SERVER_FIELDS)
     os.makedirs(EXPORTS_DIR, exist_ok=True)
     with _export_log_lock:
-        with open(os.path.join(EXPORTS_DIR, f"{guid}.json"), "w") as f:
+        while True:   # exclusive create: a code is never handed out twice
+            guid = _random_code()
+            try:
+                f = open(os.path.join(EXPORTS_DIR, f"{guid}.json"), "x")
+                break
+            except FileExistsError:
+                continue
+        entry["guid"] = guid
+        with f:
             json.dump(entry, f, indent=1)
         with open(EXPORT_LOG, "a") as f:
             f.write(json.dumps(entry, separators=(",", ":")) + "\n")
@@ -319,12 +370,11 @@ async def log_export(request: Request):
             "generator_commit": APP_COMMIT}
 
 
-def _load_export(guid: str) -> dict:
-    if not _GUID_RE.match(guid):
-        raise HTTPException(400, "bad guid")
-    path = os.path.join(EXPORTS_DIR, f"{guid}.json")
+def _load_export(raw: str) -> dict:
+    gid = _resolve_id(raw)
+    path = os.path.join(EXPORTS_DIR, f"{gid}.json")
     if not os.path.isfile(path):
-        raise HTTPException(404, "no such export")
+        raise HTTPException(404, f"no export with code {gid}")
     with open(path) as f:
         return json.load(f)
 
@@ -337,14 +387,33 @@ def get_export(guid: str):
     return rec
 
 
+_PAGE_CSP = {"Content-Security-Policy":
+             "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'"}
+
+
 @app.get("/b/{guid}")
 def export_page(guid: str):
-    """The page a printed base's QR code lands on: the complete setup that
-    produced it, plus a link to restore it live into the studio. Records
-    are client-supplied, so every value is escaped and the CSP forbids
-    script outright."""
-    rec = _load_export(guid)
+    """The page a printed base's code (or QR) leads to: the complete setup
+    that produced it, plus a link to restore it live into the studio.
+    Records are client-supplied, so every value is escaped and the CSP
+    forbids script outright."""
     e = lambda v: _esc(str(v), quote=True)
+    try:
+        rec = _load_export(guid)
+    except HTTPException as err:   # typed by hand: say what's wrong, readably
+        page = f"""<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>base code not found</title>
+<style>body{{font-family:system-ui,sans-serif;background:#181c22;color:#dde;
+margin:0 auto;max-width:640px;padding:24px}} a{{color:#7fb3ff}}</style>
+<h2>{e(err.detail)}</h2>
+<p>Codes are six characters from the bottom of a base, like
+<code>K7Q2MR</code>. Lowercase is fine; O and 0, and I, L and 1, are
+interchangeable.</p><p><a href="/">Open the studio</a></p>"""
+        return Response(content=page, media_type="text/html",
+                        status_code=err.status_code, headers=_PAGE_CSP)
+    guid = rec.get("guid") or guid
+
     bo = rec.get("base_opts")
     bo = bo if isinstance(bo, dict) else {}
     terrain = rec.get("terrain")
@@ -374,7 +443,7 @@ td:first-child{{opacity:.7}} .warn{{color:#e0a030}}
 code{{background:#242a33;padding:1px 5px;border-radius:4px}}
 pre{{background:#12151a;padding:12px;border-radius:8px;overflow-x:auto;
 font-size:12px}}</style>
-<h2>Printed base — export <code>{e(guid)}</code></h2>
+<h2>Printed base <code>{e(guid)}</code></h2>
 <p>{e(rec.get("ts", ""))} · schema v{e(rec.get("schema", "?"))} · generator
 <code>{e(rec.get("generator_commit", "?"))}</code> · terrain seed
 <code>{e(tseed)}</code> · placement seed
@@ -383,9 +452,7 @@ font-size:12px}}</style>
 <a class="btn" href="/?restore={e(guid)}">Open this setup in the studio</a>
 <h3>Base options</h3><table>{rows}</table>
 <h3>Full record</h3><pre>{e(json.dumps(rec, indent=1))}</pre>"""
-    return Response(content=page, media_type="text/html", headers={
-        "Content-Security-Policy":
-            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'"})
+    return Response(content=page, media_type="text/html", headers=_PAGE_CSP)
 
 
 # ------------------------------------------------------------------ bases presets

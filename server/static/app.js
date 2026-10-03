@@ -684,12 +684,15 @@ async function init() {
   state.seed = data.seed;
   state.key = data.key;
 
-  // ?restore=<guid>: load a full export record (terrain + base options) —
-  // the landing flow for QR codes printed on base bottoms
+  // ?restore=<code>: load a full export record (terrain + base options) —
+  // the landing flow for codes printed on base bottoms. The server parses
+  // the code (forgiving of case and misread O/I/L) and legacy 12-hex guids.
   const guid = new URLSearchParams(location.search).get("restore");
-  if (guid && /^[0-9a-f]{12}$/.test(guid)) {
+  if (guid) {
     try {
-      const rec = await (await fetch(`/api/exports/${guid}`)).json();
+      const res = await fetch(`/api/exports/${encodeURIComponent(guid.trim())}`);
+      const rec = await res.json();
+      if (!res.ok) throw new Error(typeof rec.detail === "string" ? rec.detail : `HTTP ${res.status}`);
       if (rec.terrain) {
         // merge over defaults so a partial/hand-edited record can't leave
         // holes in the config the UI expects to be fully populated
@@ -705,12 +708,12 @@ async function init() {
         state.seed = rec.terrain.seed;
         await pushConfig();
         if (rec.base_opts && typeof BASE_OPTS !== "undefined") {
-          Object.assign(BASE_OPTS, rec.base_opts);
+          Object.assign(BASE_OPTS, migrateBaseOpts(rec.base_opts));
           $("bases-seed").value = rec.placement_seed ?? 1;
           if (typeof syncBaseControls === "function") syncBaseControls();
         }
         if (!rec.reproducible_exactly) {
-          alert(`Restored export ${guid}, but it was generated on commit ` +
+          alert(`Restored export ${rec.guid}, but it was generated on commit ` +
             `${rec.generator_commit} and the server now runs ` +
             `${rec.current_generator_commit} — terrain may differ ` +
             `for the same seed.`);
@@ -718,6 +721,7 @@ async function init() {
       }
     } catch (e) {
       console.error("restore failed:", e);
+      alert(`Couldn't restore ${guid}: ${e.message}`);
     }
   }
   $("seed").value = state.seed;
