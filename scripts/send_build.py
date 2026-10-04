@@ -6,9 +6,12 @@ lift, auto-supports) must NOT touch them. Instead the 3MF is wrapped as-is
 into a DragonFruit VOXL scene with empty support lists, then sliced with the
 server's saved settings and uploaded. Printing is never started.
 
-  .venv/bin/python scripts/send_build.py voxl  build.3mf --name NAME   # -> NAME.voxl
+  .venv/bin/python scripts/send_build.py voxl  build.3mf [part2.3mf ...] --name NAME   # -> NAME.voxl
                                        [--rotate 90]  # turn on the plate (default 90)
+      several 3MFs = one build in one plate frame (a big Print bed's parts),
+      one VOXL model each
   .venv/bin/python scripts/send_build.py slice NAME.voxl               # -> slice job id
+  .venv/bin/python scripts/send_build.py wait  JOB_ID                  # resume watching a job
   .venv/bin/python scripts/send_build.py send  JOB_ID FILE.ctb         # upload, verify
 
   BP_URL  build processor (default http://192.168.1.60:8010)
@@ -110,42 +113,56 @@ def rotate_z(V, deg):
     return R
 
 
-def write_voxl(V, T, out, name):
-    """DragonFruit VOXL v2: META, SCNE, MODL, MESH (zlib binary STL), SUPP.
-    The mesh is centred on its bounding box and placed by the model
-    transform so its lowest point (the rafts) sits exactly on the plate."""
+def compress_model(V, T):
+    """One model's mesh for the VOXL: binary STL centred on its own bounding
+    box (the model transform puts it back), zlib-compressed in pieces.
+    Shifts V in place."""
     lo, hi = V.min(axis=0), V.max(axis=0)
+    V -= (lo + hi) / 2
+    comp = zlib.compressobj(6)
+    pieces, usize = [], 0
+    for chunk in stl_chunks(V, T):
+        usize += len(chunk)
+        pieces.append(comp.compress(chunk))
+    pieces.append(comp.flush())
+    if usize >= 2 ** 32:
+        raise SystemExit(f"a model is {usize / 1e9:.2f} GB as STL; VOXL v2 sizes are 32-bit "
+                         "(max ~85 M triangles per model): split the build into parts")
+    return {"lo": lo, "hi": hi, "pieces": pieces, "usize": usize, "ntri": int(len(T))}
+
+
+def write_voxl(meshes, out, name):
+    """DragonFruit VOXL v2: META, SCNE, MODL, one MESH per model (zlib binary
+    STL; MODL[i] <-> MESH index i), SUPP. Each model sits at its own centre
+    via its transform, the whole build centred on the plate with its lowest
+    point (the rafts) exactly on it."""
+    lo = np.min([m["lo"] for m in meshes], axis=0)
+    hi = np.max([m["hi"] for m in meshes], axis=0)
     if hi[0] - lo[0] > PLATE_MM[0] or hi[1] - lo[1] > PLATE_MM[1]:
         raise SystemExit(f"build footprint {hi[0]-lo[0]:.1f} x {hi[1]-lo[1]:.1f} mm "
                          f"doesn't fit the {PLATE_MM[0]} x {PLATE_MM[1]} mm plate")
     centre = (lo + hi) / 2
-    Vc = V - centre
-    height = float(hi[2] - lo[2])
-
-    comp = zlib.compressobj(6)
-    parts, usize = [], 0
-    for chunk in stl_chunks(Vc, T):
-        usize += len(chunk)
-        parts.append(comp.compress(chunk))
-    parts.append(comp.flush())
-    del Vc
-    mesh_len = sum(map(len, parts))    # written piecewise: no second ~GB copy
-
     now = datetime.datetime.now(datetime.timezone.utc)
     iso = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    mid = "heightmap-build"
+    many = len(meshes) > 1
+    ids = [f"heightmap-build-{i + 1}" if many else "heightmap-build" for i in range(len(meshes))]
     meta = {"generator": "heightmap-studio", "createdAt": iso, "updatedAt": iso,
             "units": "mm", "coordinateSystem": "right-handed-z-up"}
-    scene = {"activeModelId": mid, "selectedModelIds": [mid]}
-    models = [{
-        "id": mid, "name": f"{name}.stl", "visible": True, "color": "#a3a3a3",
-        "polygonCount": int(len(T)),
-        "transform": {"position": {"x": 0, "y": 0, "z": height / 2},
-                      "rotation": {"x": 0, "y": 0, "z": 0},
-                      "scale": {"x": 1, "y": 1, "z": 1}},
-        "mesh": {"mode": "embedded-chunk", "fileName": f"{name}.stl",
-                 "mimeType": "model/stl", "uncompressedSizeBytes": usize},
-    }]
+    scene = {"activeModelId": ids[0], "selectedModelIds": ids}
+    models = []
+    for i, m in enumerate(meshes):
+        c = (m["lo"] + m["hi"]) / 2
+        fname = f"{name}_part{i + 1}.stl" if many else f"{name}.stl"
+        models.append({
+            "id": ids[i], "name": fname, "visible": True, "color": "#a3a3a3",
+            "polygonCount": m["ntri"],
+            "transform": {"position": {"x": float(c[0] - centre[0]), "y": float(c[1] - centre[1]),
+                                       "z": float(c[2] - lo[2])},
+                          "rotation": {"x": 0, "y": 0, "z": 0},
+                          "scale": {"x": 1, "y": 1, "z": 1}},
+            "mesh": {"mode": "embedded-chunk", "fileName": fname,
+                     "mimeType": "model/stl", "uncompressedSizeBytes": m["usize"]},
+        })
     supports = {"version": 1,
                 "meta": {"source": "heightmap-studio",
                          "objectCenter": {"x": 0, "y": 0, "z": 0},
@@ -161,37 +178,35 @@ def write_voxl(V, T, out, name):
         (b"META", 0, 0, [js(meta)], None),
         (b"SCNE", 0, 0, [js(scene)], None),
         (b"MODL", 0, 1, [zlib.compress(js(models), 6)], len(js(models))),
-        (b"MESH", 0, 1, parts, usize),
+        *[(b"MESH", i, 1, m["pieces"], m["usize"]) for i, m in enumerate(meshes)],
         (b"SUPP", 0, 1, [zlib.compress(js(supports), 6)], len(js(supports))),
     ]
-    if usize >= 2 ** 32:
-        raise SystemExit(f"mesh is {usize / 1e9:.2f} GB as STL; VOXL v2 sizes are 32-bit "
-                         "(max ~85 M triangles): lower the export resolution")
     head = struct.pack("<4sHHII", b"VOXL", 2, 0, len(chunks), 0)
     off = 16 + 20 * len(chunks)
     dirs = []
     for typ, idx, cmp_, pieces, us in chunks:
         size = sum(map(len, pieces))
+        if off >= 2 ** 32:
+            raise SystemExit("VOXL v2 offsets are 32-bit; build too large")
         dirs.append(struct.pack("<4sHHIII", typ, idx, cmp_, off, size,
                                 us if us is not None else size))
         off += size
-    if off >= 2 ** 32:
-        raise SystemExit("VOXL v2 offsets are 32-bit; build too large")
     with open(out, "wb") as f:
         f.write(head)
         f.writelines(dirs)
         for *_, pieces, _us in chunks:
             f.writelines(pieces)
-    return {"triangles": int(len(T)), "stl_bytes": usize, "voxl_bytes": off,
+    return {"models": len(meshes), "triangles": sum(m["ntri"] for m in meshes),
+            "stl_bytes": sum(m["usize"] for m in meshes), "voxl_bytes": off,
             "footprint_mm": [round(float(hi[0] - lo[0]), 2), round(float(hi[1] - lo[1]), 2)],
-            "height_mm": round(height, 2), "min_z": float(lo[2])}
+            "height_mm": round(float(hi[2] - lo[2]), 2), "min_z": float(lo[2])}
 
 
 def check_voxl(path):
     """Re-read a VOXL with the same rules as DragonFruit's parseVoxlBinaryV2.
     The mesh is decompressed as a stream and only measured (it can be GBs)."""
     total = os.path.getsize(path)
-    found, mesh = {}, None
+    found, mesh = {}, {}
     with open(path, "rb") as fh:
         magic, ver, _flags, count, _r = struct.unpack("<4sHHII", fh.read(16))
         assert magic == b"VOXL" and ver in (2, 3), (magic, ver)
@@ -210,8 +225,8 @@ def check_voxl(path):
                         head += out[:84 - len(head)]
                     n += len(out)
                 n += len(d.flush()) if cmp_ == 1 else 0
-                assert n == us, f"MESH size mismatch ({n} vs {us})"
-                mesh = (n, head)
+                assert n == us, f"MESH[{idx}] size mismatch ({n} vs {us})"
+                mesh[idx] = (n, head)
                 continue
             data = fh.read(size)
             data = zlib.decompress(data) if cmp_ == 1 else data
@@ -219,10 +234,14 @@ def check_voxl(path):
             found[(typ.decode(), idx)] = data
     assert ("META", 0) in found and ("SUPP", 0) in found and mesh
     models = json.loads(found[("MODL", 0)])
-    stl_len, stl_head = mesh
-    assert stl_len == models[0]["mesh"]["uncompressedSizeBytes"]
-    ntri = struct.unpack_from("<I", stl_head, 80)[0]
-    assert stl_len == 84 + 50 * ntri == 84 + 50 * models[0]["polygonCount"]
+    assert sorted(mesh) == list(range(len(models))), "MODL[i] must map to MESH index i"
+    ntri = 0
+    for i, model in enumerate(models):
+        stl_len, stl_head = mesh[i]
+        assert stl_len == model["mesh"]["uncompressedSizeBytes"]
+        nt = struct.unpack_from("<I", stl_head, 80)[0]
+        assert stl_len == 84 + 50 * nt == 84 + 50 * model["polygonCount"]
+        ntri += nt
     supp = json.loads(found[("SUPP", 0)])
     return {"models": len(models), "triangles": ntri,
             "supports": sum(len(v) for v in supp.values() if isinstance(v, list))}
@@ -243,9 +262,20 @@ def api(method, path, body=None, raw=None, timeout=60):
 
 
 def wait(job_id):
-    last = None
+    last, fails = None, 0
     while True:
-        j = api("GET", f"/api/jobs/{job_id}")["job"]
+        try:
+            j = api("GET", f"/api/jobs/{job_id}")["job"]
+            fails = 0
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+            # a service busy loading a big build can drop a status poll;
+            # the job carries on, so keep asking
+            fails += 1
+            if fails > 30:
+                raise
+            print(f"  (status poll failed: {e}; retrying)", flush=True)
+            time.sleep(min(30, 2 * fails))
+            continue
         prog = j.get("progress") or {}
         line = f"  {j['state']} {prog.get('phase', '')} {prog.get('done', '')}/{prog.get('total', '')}"
         if line != last:
@@ -271,28 +301,37 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    v = sub.add_parser("voxl"); v.add_argument("build"); v.add_argument("--name", required=True)
+    v = sub.add_parser("voxl"); v.add_argument("build", nargs="+"); v.add_argument("--name", required=True)
     v.add_argument("--rotate", type=float, default=90.0,
                    help="degrees about the vertical axis (default 90: rafts along the plate's short side)")
     s = sub.add_parser("slice"); s.add_argument("voxl"); s.add_argument("--settings", default="default")
     d = sub.add_parser("send"); d.add_argument("job"); d.add_argument("file")
+    w = sub.add_parser("wait"); w.add_argument("job")
     a = ap.parse_args()
 
     if a.cmd == "voxl":
-        V, T = read_3mf(a.build)
-        if a.rotate % 360:
-            V = rotate_z(V, a.rotate)
-        info = write_voxl(V, T, f"{a.name}.voxl", a.name)
+        meshes = []
+        for path in a.build:          # one part at a time: only one mesh in memory
+            V, T = read_3mf(path)
+            if a.rotate % 360:
+                V = rotate_z(V, a.rotate)
+            meshes.append(compress_model(V, T))
+            del V, T
+        info = write_voxl(meshes, f"{a.name}.voxl", a.name)
         info["rotated_deg"] = a.rotate
         print(json.dumps(info))
         print("re-read:", json.dumps(check_voxl(f"{a.name}.voxl")))
-    elif a.cmd == "slice":
-        name = os.path.splitext(os.path.basename(a.voxl))[0]
-        j = run_job("slice", {"outputName": name, "settings": a.settings}, [a.voxl])
+    elif a.cmd in ("slice", "wait"):
+        if a.cmd == "slice":
+            name = os.path.splitext(os.path.basename(a.voxl))[0]
+            j = run_job("slice", {"outputName": name, "settings": a.settings}, [a.voxl])
+        else:
+            j = wait(a.job)
         print(json.dumps({k: j.get(k) for k in ("id", "state", "outputs", "result", "error")}, indent=1))
         bridge = (j.get("result") or {}).get("bridge") or {}
-        if bridge.get("flagged_layers"):
-            print("STOP: bridge check flagged layers -- do not send", file=sys.stderr)
+        if j.get("state") != "done" or bridge.get("flagged_layers"):
+            print("STOP: slice failed or the bridge check flagged layers -- do not send",
+                  file=sys.stderr)
             sys.exit(2)
     elif a.cmd == "send":
         j = run_job("send", {"jobId": a.job, "fileName": a.file})   # never startPrint

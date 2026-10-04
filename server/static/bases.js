@@ -1251,39 +1251,67 @@ async function exportSupportSweep() {
 
 // ---------------------------------------------------------------- print bed
 //
-// A full plate for the printer: bed_count different bases (indices 0..n-1
-// of the placement seed, current settings, supports forced on) in print
-// orientation, spread evenly over the build area as a grid of racks. Rafts
-// run along X here; scripts/send_build.py turns the build 90° so they lie
-// along the plate's short side. Every base gets its own export record
-// (count 1 at its index), so the code on its bottom names exactly that base
-// and restores it alone.
+// A full plate for the printer: bed_count different bases (current
+// settings, supports forced on) in print orientation, spread evenly over
+// the build area as a grid of racks. Rafts run along X here;
+// scripts/send_build.py turns the build 90° so they lie along the plate's
+// short side. Every base gets its own export record (count 1 at its index),
+// so the code on its bottom names exactly that base and restores it alone.
+//
+// Bases come from the placement seed's series from index_offset on ("Skip
+// first": the bases before it count as printed already), skipping any crop
+// that overlaps an earlier one, so no two bases share terrain. Big beds go
+// out as several 3MF parts in one plate frame, each kept to BED_PART_TRIS
+// (VOXL v2 caps one mesh at ~85 M triangles, and a part is built and freed
+// before the next to keep browser memory flat); send_build.py takes the
+// parts together as one build, one model each.
 const BED_AREA_MM = [118.37, 211.68];   // Saturn 4 Ultra 16K plate, in this frame
 const BED_MARGIN_MM = 5, BED_MIN_GAP_MM = 5;
+const BED_PART_TRIS = 55e6;             // the size of a 30 x Ø25 bed at 25 px/mm
 
 async function exportBed() {
   if (!state.key) return;
   const btn = $("bases-bed");
   const label0 = btn.textContent;
   const n = Math.max(1, Math.round(BASE_OPTS.bed_count));
+  const first = Math.max(0, Math.round(BASE_OPTS.index_offset || 0));
   const ppm = BASE_OPTS.export_px_per_mm;
   const caps = { rings: 8192, sect: 32768 };
   const saved = { ...BASE_OPTS };
-  const built = [];
+  let built = [];
   btn.disabled = true;
-  btn.textContent = "Rendering bed…";
+  btn.textContent = "Choosing bases…";
   try {
-    const bases = [];
-    for (let off = 0; off < n; off += 24) {      // the server renders <= 24 per request
-      const got = await requestBases(ppm, { count: Math.min(24, n - off), index_offset: off });
+    // positions first, from a cheap low-res fetch of the series
+    const taken = [], chosen = [];
+    for (let off = 0; chosen.length < n; off += 24) {    // the server renders <= 24 per request
+      if (off > first + 4 * n + 240) throw new Error("couldn't find enough non-overlapping bases");
+      const got = await requestBases(2, { count: 24, index_offset: off });
       if (!got || !got.length) throw new Error("couldn't fetch the bases");
-      bases.push(...got);
+      for (const b of got) {
+        const clear = (o) => Math.hypot(b.x - o.x, b.y - o.y) >= (b.diameter + o.diameter) / 2 + 1;
+        if (b.index < first) taken.push(b);
+        else if (chosen.length < n && taken.every(clear) && chosen.every(clear)) chosen.push(b);
+      }
     }
-    const est = exportEstimate(bases, ppm);
+    btn.textContent = "Rendering bed…";
+    const bases = [];
+    for (let i = 0; i < chosen.length; ) {               // full-res crops, in index runs
+      let j = i + 1;
+      while (j < chosen.length && j - i < 24 && chosen[j].index === chosen[j - 1].index + 1) j++;
+      const got = await requestBases(ppm, { count: j - i, index_offset: chosen[i].index });
+      if (!got || got.length !== j - i) throw new Error("couldn't fetch the bases");
+      bases.push(...got);
+      i = j;
+    }
+    const partTris = window.__bed_part_tris || BED_PART_TRIS;   // test hook
+    const partSize = Math.ceil(n / Math.ceil(n / Math.max(1,
+      Math.floor(partTris / exportEstimate([bases[0]], ppm).tris))));
+    const nParts = Math.ceil(n / partSize);
+    const est = exportEstimate(bases.slice(0, partSize), ppm);
     if (est.peak3mf > EXPORT_MEM_BUDGET && !confirm(
-        `This bed is ~${(est.tris / 1e6).toFixed(0)} M triangles and needs roughly ` +
-        `${(est.peak3mf / 1e9).toFixed(1)} GB of browser memory. Lower "Download res" or ` +
-        `"Bed bases".\n\nTry anyway?`)) return;
+        `Each part of this bed is ~${(est.tris / 1e6).toFixed(0)} M triangles and needs roughly ` +
+        `${(est.peak3mf / 1e9).toFixed(1)} GB of browser memory. Lower "Download res".\n\nTry anyway?`)) return;
     Object.assign(BASE_OPTS, { support_enabled: true, stack_enabled: false });
 
     // unit footprints in print orientation: along the raft = local z, across
@@ -1315,60 +1343,74 @@ async function exportBed() {
       u.row = Math.floor(k / cols);
       const inRow = Math.min(cols, n - u.row * cols);      // a short last row is centred
       u.col = k % cols + (cols - inRow) / 2;
+      u.part = Math.floor(k / partSize);
     });
 
     const placement = parseInt($("bases-seed").value) || 1;
     const id = Array.from(crypto.getRandomValues(new Uint8Array(4)),
       (b) => b.toString(16).padStart(2, "0")).join("");
     btn.textContent = "Minting codes…";
-    for (const [k, u] of units.entries()) {
+    for (const u of units) {
       const r = await fetch("/api/log_export", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          base_opts: { ...BASE_OPTS, count: 1, index_offset: u.base.index ?? k },
+          base_opts: { ...BASE_OPTS, count: 1, index_offset: u.base.index },
           placement_seed: placement,
           terrain: { seed: state.seed, config: state.config },
-          bed: { id, index: u.base.index ?? k, bases: n, row: u.row + 1, col: Math.round(u.col) + 1,
-                 rows, cols, px_per_mm: ppm },
+          bed: { id, index: u.base.index, bases: n, row: u.row + 1, col: Math.round(u.col) + 1,
+                 rows, cols, px_per_mm: ppm, part: u.part + 1, parts: nParts },
         }),
       });
       if (!r.ok) throw new Error("couldn't store the export records");
       u.code = (await r.json()).guid;
     }
 
-    btn.textContent = "Building bed…";
-    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
-    const meshes = [];
-    for (const [k, u] of units.entries()) {
-      activeCode = u.code;
-      const disc = buildBaseGeometry(u.base, u.base.index ?? k, 1.0, caps, true);
-      const zTop = u.base.diameter / 2 + BASE_OPTS.support_height_mm;
-      const X0 = (u.row - (rows - 1) / 2) * pitchX - (u.z0 + u.z1) / 2;
-      const Y0 = (u.col - (cols - 1) / 2) * pitchY - (u.y0 + u.y1) / 2;
-      const map = (x, y, z) => [z + X0, y + Y0, zTop - x];
-      for (const g of [disc, ...u.support]) { meshes.push(prepMesh(g, map)); built.push(g); }
+    const stem = `print_bed_${id}`;
+    for (let part = 0; part < nParts; part++) {
+      btn.textContent = nParts > 1 ? `Building part ${part + 1}/${nParts}…` : "Building bed…";
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+      const mine = units.filter((u) => u.part === part);
+      const meshes = [];
+      for (const u of mine) {
+        activeCode = u.code;
+        const disc = buildBaseGeometry(u.base, u.base.index, 1.0, caps, true);
+        const zTop = u.base.diameter / 2 + BASE_OPTS.support_height_mm;
+        const X0 = (u.row - (rows - 1) / 2) * pitchX - (u.z0 + u.z1) / 2;
+        const Y0 = (u.col - (cols - 1) / 2) * pitchY - (u.y0 + u.y1) / 2;
+        const map = (x, y, z) => [z + X0, y + Y0, zTop - x];
+        for (const g of [disc, ...u.support]) { meshes.push(prepMesh(g, map)); built.push(g); }
+      }
+      activeCode = null;
+      const chunks = await build3MF(meshes, {
+        Application: "Battlefield Heightmap Studio",
+        Title: `print bed ${id}` + (nParts > 1 ? ` part ${part + 1}/${nParts}` : ""),
+        "hms:bed": JSON.stringify(mine.map((u) => ({
+          code: u.code, index: u.base.index, row: u.row + 1, col: Math.round(u.col) + 1 }))),
+        "hms:part": `${part + 1}/${nParts}`,
+      });
+      built.forEach((g) => g.dispose());     // free this part before building the next
+      built = [];
+      meshes.length = 0;
+      downloadBlob(chunks, "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+        nParts > 1 ? `${stem}_part${part + 1}of${nParts}.3mf` : `${stem}.3mf`);
     }
-    activeCode = null;
-    const chunks = await build3MF(meshes, {
-      Application: "Battlefield Heightmap Studio",
-      Title: `print bed ${id}`,
-      "hms:bed": JSON.stringify(units.map((u, k) => ({
-        code: u.code, index: u.base.index ?? k, row: u.row + 1, col: Math.round(u.col) + 1 }))),
-    });
-    downloadBlob(chunks, "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
-      `print_bed_${id}.3mf`);
+    const files = nParts > 1
+      ? Array.from({ length: nParts }, (_, i) => `${stem}_part${i + 1}of${nParts}.3mf`).join(" ")
+      : `${stem}.3mf`;
     const legend = [
-      `Print bed ${id}: ${n} bases (placement seed ${placement}, indices 0-${n - 1}), ` +
-        `${ppm} px/mm, terrain seed ${state.seed}`,
+      `Print bed ${id}: ${n} bases, placement seed ${placement} from base ${first + 1} on ` +
+        `(crops overlapping an earlier base skipped), ${ppm} px/mm, terrain seed ${state.seed}`,
       `${rows} rows x ${cols} across, ${pitchX.toFixed(1)} mm between rows and ` +
         `${pitchY.toFixed(1)} mm between bases (centre to centre), in print orientation.`,
+      nParts > 1 ? `Written as ${nParts} parts in one plate frame - send them together:\n` +
+        `  scripts/send_build.py voxl ${files} --name ${stem}` : `File: ${files}`,
       "Each base's code is on its bottom; /b/<code> or Find a base restores just that base.",
       "",
-      "row  col  base  code    record",
-      ...units.map((u, k) => `${String(u.row + 1).padEnd(5)}${String(Math.round(u.col) + 1).padEnd(5)}` +
-        `${String((u.base.index ?? k) + 1).padEnd(6)}${u.code}  ${QR_CANONICAL}/b/${u.code}`),
+      "row  col  base  part  code    record",
+      ...units.map((u) => `${String(u.row + 1).padEnd(5)}${String(Math.round(u.col) + 1).padEnd(5)}` +
+        `${String(u.base.index + 1).padEnd(6)}${String(u.part + 1).padEnd(6)}${u.code}  ${QR_CANONICAL}/b/${u.code}`),
     ].join("\n") + "\n";
-    downloadBlob([legend], "text/plain", `print_bed_${id}.txt`);
+    downloadBlob([legend], "text/plain", `${stem}.txt`);
   } catch (e) {
     console.error("print bed failed:", e);
     alert(`Print bed failed: ${e.message}`);
@@ -1660,7 +1702,8 @@ function initBases() {
   const bedHead = document.createElement("h3");
   bedHead.textContent = "Print bed";
   wrap.appendChild(bedHead);
-  addBaseSliders(wrap, [["bed_count", "Bed bases", 1, 60, 1, ""]]);
+  addBaseSliders(wrap, [["bed_count", "Bed bases", 1, 120, 1, ""],
+                        ["index_offset", "Skip first", 0, 1000, 1, "", true]]);
   const bedNote = document.createElement("div");
   bedNote.className = "row";
   bedNote.style.fontSize = "11px";
@@ -1668,7 +1711,9 @@ function initBases() {
   bedNote.textContent =
     "Print bed spreads that many different bases evenly over the Saturn 4 Ultra " +
     "16K plate in print orientation (supports on, current settings, Download res), " +
-    "each with its own code, as one 3MF plus a legend.";
+    "each with its own code. Skip first = bases of this placement seed already " +
+    "printed: the bed continues the series and skips crops overlapping any earlier " +
+    "base. Big beds come as several 3MF parts (send them together) plus a legend.";
   wrap.appendChild(bedNote);
 
   // STL export resolution — independent of the viewer "Quality". The mesh at

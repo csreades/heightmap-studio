@@ -177,11 +177,16 @@ Base geometry (defaults tuned for Legions Imperialis):
 - **Print bed** — a full plate in one go: *Bed bases* different bases
   (default 30) at the current settings, in print orientation, spread
   evenly over the Saturn 4 Ultra 16K build area as a grid of racks (30
-  Ø25 bases = 3 rows × 10). **Each base gets its own code and record**, so
-  any one can be looked up or reprinted on its own later (a base's crop
-  depends only on the placement seed and its index). Downloads a 3MF and a
-  legend mapping codes to plate positions; `scripts/send_build.py` takes it
-  from there. 30 bases at 25 px/mm is ~53 M triangles.
+  Ø25 bases = 3 rows × 10, 60 = 3 rows × 20). **Each base gets its own
+  code and record**, so any one can be looked up or reprinted on its own
+  later (a base's crop depends only on the placement seed and its index).
+  *Skip first* continues a series: set it to the number of bases already
+  printed from this placement seed and the next bed carries on from there,
+  skipping any crop that overlaps an earlier base, so no two bases share
+  terrain. Downloads the 3MF and a legend mapping codes to plate positions;
+  `scripts/send_build.py` takes it from there. 30 bases at 25 px/mm is
+  ~53 M triangles; bigger beds come as several 3MF parts in one plate
+  frame (each ≤ 55 M triangles), sent together as one build.
 
 - **Base configs** — save/load the whole setup (base options, pins,
   support, placement seed) with the terrain preset embedded
@@ -263,10 +268,13 @@ its own supports on top of ours), slices it with the server's saved
 settings, stops if the bridge check flags any layer, and uploads the
 print file. It never starts a print. Big builds stream through it (a
 30-base bed is ~4 GB of model XML); one VOXL mesh holds up to ~85 M
-triangles.
+triangles, so several 3MFs given together become one build with one
+model each (a big Print bed's parts). `wait JOB_ID` resumes watching a
+job if the connection drops.
 
 ```bash
 .venv/bin/python scripts/send_build.py voxl build.3mf --name NAME   # -> NAME.voxl
+.venv/bin/python scripts/send_build.py voxl bed_part1of2.3mf bed_part2of2.3mf --name NAME  # parts: one build
 .venv/bin/python scripts/send_build.py slice NAME.voxl              # -> job id + NAME.ctb
 .venv/bin/python scripts/send_build.py send JOB_ID NAME.ctb         # upload + verify
 ```
